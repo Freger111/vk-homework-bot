@@ -208,8 +208,23 @@ def latex_to_text(text: str) -> str:
 LLM_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash"]
 
 
+def strip_old_images(messages: list[dict]) -> list[dict]:
+    """Оставляет картинку только в последнем сообщении — чтобы не раздувать запрос."""
+    out = []
+    for i, m in enumerate(messages):
+        content = m.get("content")
+        if isinstance(content, list) and i != len(messages) - 1:
+            texts = [p.get("text", "") for p in content if p.get("type") == "text"]
+            out.append(
+                {"role": m["role"], "content": " ".join(t for t in texts if t) or "[фото]"}
+            )
+        else:
+            out.append(m)
+    return out
+
+
 async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
-    messages = get_history(peer_id)
+    messages = strip_old_images(get_history(peer_id))
 
     # Сначала OpenRouter (доступнее из РФ), затем Gemini.
     providers = []
@@ -249,7 +264,7 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
                     last_err = f"{model}: пустой ответ"
                     log.warning("LLM %s вернул пустой ответ", model)
                     break
-                last_err = f"{model}: HTTP {r.status_code}"
+                last_err = f"{model}: HTTP {r.status_code} {r.text[:250]}"
                 log.warning("LLM %s -> %s (попытка %s)", model, r.status_code, attempt + 1)
                 if r.status_code in (429, 500, 502, 503, 504):
                     await asyncio.sleep(2 + attempt * 2)
@@ -261,8 +276,7 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
                 await asyncio.sleep(2 + attempt * 2)
     log.error("Все модели LLM недоступны: %s", last_err)
     return (
-        "⚠️ Серверы моделей сейчас перегружены. Напишите ещё раз через минуту — "
-        "обычно проходит.\n"
+        "⚠️ Не удалось получить ответ модели. Попробуйте ещё раз.\n"
         f"(подробно: {last_err})"
     )
 
