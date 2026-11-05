@@ -239,7 +239,7 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
     for m in [settings.llm_model, *LLM_FALLBACK_MODELS]:
         providers.append((settings.llm_base_url, settings.llm_api_key, m))
 
-    last_err = ""
+    errors: list[str] = []
     for base_url, api_key, model in providers:
         url = base_url.rstrip("/") + "/chat/completions"
         headers = {"Content-Type": "application/json"}
@@ -261,23 +261,24 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
                     if content.strip():
                         log.info("LLM %s ответил (%d симв.)", model, len(content))
                         return latex_to_text(content)
-                    last_err = f"{model}: пустой ответ"
+                    errors.append(f"{model}: пустой ответ")
                     log.warning("LLM %s вернул пустой ответ", model)
                     break
-                last_err = f"{model}: HTTP {r.status_code} {r.text[:250]}"
+                errors.append(f"{model}: HTTP {r.status_code} {r.text[:150]}")
                 log.warning("LLM %s -> %s (попытка %s)", model, r.status_code, attempt + 1)
                 if r.status_code in (429, 500, 502, 503, 504):
                     await asyncio.sleep(2 + attempt * 2)
                     continue
                 break
             except Exception as e:
-                last_err = f"{model}: {type(e).__name__}"
+                errors.append(f"{model}: {type(e).__name__}")
                 log.warning("LLM %s -> %s (попытка %s)", model, type(e).__name__, attempt + 1)
                 await asyncio.sleep(2 + attempt * 2)
-    log.error("Все модели LLM недоступны: %s", last_err)
+    detail = " | ".join(errors[-6:])
+    log.error("Все модели LLM недоступны: %s", detail)
     return (
         "⚠️ Не удалось получить ответ модели. Попробуйте ещё раз.\n"
-        f"(подробно: {last_err})"
+        f"(подробно: {detail})"
     )
 
 
