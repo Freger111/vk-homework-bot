@@ -28,6 +28,18 @@ API_VERSION = "5.131"
 
 history: dict[int, list[dict]] = {}
 MAX_HISTORY = 12
+levels: dict[int, str] = {}
+awaiting_level: set[int] = set()
+
+# Ссылка на чат с администратором (для кнопки «Помощь»)
+ADMIN_VK = settings.admin_vk.strip()
+
+
+def admin_chat_url() -> str:
+    if ADMIN_VK.isdigit():
+        return f"https://vk.com/im?sel={ADMIN_VK}"
+    return f"https://vk.me/{ADMIN_VK.lstrip('@')}"
+
 
 # Запас под лимит VK в 4096 символов на одно сообщение
 MAX_VK_LEN = 4000
@@ -36,29 +48,60 @@ HELP_TEXT = (
     "Привет! Я решаю домашнее задание 📚\n\n"
     "• Напиши задачу текстом — решу пошагово с объяснением.\n"
     "• Пришли фото задачи — разберу.\n\n"
-    "Кнопки внизу: фото, помощь, сброс диалога."
+    "Кнопки внизу: фото, сечение, график, уровень, помощь, сброс."
 )
 
 BTN_PHOTO = "📷 Прислать фото"
+BTN_SECTION = "📐 Сечение"
+BTN_GRAPH = "📊 График"
+BTN_LEVEL = "⭐ Уровень"
 BTN_HELP = "❓ Помощь"
 BTN_RESET = "🧹 Сбросить"
+
+HELP_BUTTON = (
+    {
+        "action": {"type": "link", "label": BTN_HELP, "link": admin_chat_url()},
+        "color": "secondary",
+    }
+    if ADMIN_VK
+    else {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"}
+)
 
 MAIN_KEYBOARD = {
     "one_time": False,
     "buttons": [
         [{"action": {"type": "text", "label": BTN_PHOTO}, "color": "primary"}],
         [
-            {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"},
-            {"action": {"type": "text", "label": BTN_RESET}, "color": "secondary"},
+            {"action": {"type": "text", "label": BTN_SECTION}, "color": "secondary"},
+            {"action": {"type": "text", "label": BTN_GRAPH}, "color": "secondary"},
         ],
+        [
+            {"action": {"type": "text", "label": BTN_LEVEL}, "color": "secondary"},
+            HELP_BUTTON,
+        ],
+        [{"action": {"type": "text", "label": BTN_RESET}, "color": "secondary"}],
     ],
 }
 
 
+def system_prompt_for(peer_id: int) -> str:
+    base = settings.system_prompt
+    lvl = levels.get(peer_id)
+    if lvl:
+        return base + f"\n\nУровень ученика: {lvl}. Подстраивай объяснение под этот уровень."
+    return base
+
+
 def get_history(peer_id: int) -> list[dict]:
     if peer_id not in history:
-        history[peer_id] = [{"role": "system", "content": settings.system_prompt}]
+        history[peer_id] = [{"role": "system", "content": system_prompt_for(peer_id)}]
     return history[peer_id]
+
+
+def set_level(peer_id: int, level: str) -> None:
+    levels[peer_id] = level
+    if peer_id in history:
+        history[peer_id][0]["content"] = system_prompt_for(peer_id)
 
 
 def push(peer_id: int, role: str, content) -> None:
@@ -327,10 +370,12 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         return
     if low in ("сброс", "/reset", BTN_RESET.lower()):
         history.pop(peer_id, None)
+        levels.pop(peer_id, None)
+        awaiting_level.discard(peer_id)
         await send_message(
             client,
             peer_id,
-            "История очищена. Пришлите новую задачу.",
+            "История и уровень очищены. Пришлите новую задачу.",
             keyboard=MAIN_KEYBOARD,
         )
         return
@@ -339,6 +384,41 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             client,
             peer_id,
             "Пришлите фото задачи — разберу и решу.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in (BTN_SECTION.lower(), "сечение"):
+        await send_message(
+            client,
+            peer_id,
+            "Пришлите фото или текст задачи на сечение — разберу построение по шагам.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in (BTN_GRAPH.lower(), "график"):
+        await send_message(
+            client,
+            peer_id,
+            "Пришлите фото или текст задачи с графиком — разберу и объясню.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in (BTN_LEVEL.lower(), "уровень"):
+        awaiting_level.add(peer_id)
+        await send_message(
+            client,
+            peer_id,
+            "Напишите ваш класс или курс (например, «8 класс», «1 курс») — подстрою объяснение.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if peer_id in awaiting_level and text:
+        awaiting_level.discard(peer_id)
+        set_level(peer_id, text)
+        await send_message(
+            client,
+            peer_id,
+            f"Учту уровень: {text}. Теперь пришлите задачу.",
             keyboard=MAIN_KEYBOARD,
         )
         return
