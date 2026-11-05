@@ -9,6 +9,7 @@
 import asyncio
 import base64
 import io
+import json
 import logging
 import random
 import re
@@ -35,8 +36,23 @@ HELP_TEXT = (
     "Привет! Я решаю домашнее задание 📚\n\n"
     "• Напиши задачу текстом — решу пошагово с объяснением.\n"
     "• Пришли фото задачи — разберу.\n\n"
-    "Чтобы задать вопрос по решению — просто пиши дальше."
+    "Кнопки внизу: фото, помощь, сброс диалога."
 )
+
+BTN_PHOTO = "📷 Прислать фото"
+BTN_HELP = "❓ Помощь"
+BTN_RESET = "🧹 Сбросить"
+
+MAIN_KEYBOARD = {
+    "one_time": False,
+    "buttons": [
+        [{"action": {"type": "text", "label": BTN_PHOTO}, "color": "primary"}],
+        [
+            {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"},
+            {"action": {"type": "text", "label": BTN_RESET}, "color": "secondary"},
+        ],
+    ],
+}
 
 
 def get_history(peer_id: int) -> list[dict]:
@@ -73,15 +89,17 @@ async def vk_call(
     return data.get("response", data)
 
 
-async def send_message(client: httpx.AsyncClient, peer_id: int, text: str) -> None:
-    await vk_call(
-        client,
-        "messages.send",
-        post=True,
-        peer_id=peer_id,
-        message=text,
-        random_id=random.randint(0, 2**31 - 1),
-    )
+async def send_message(
+    client: httpx.AsyncClient, peer_id: int, text: str, keyboard: dict | None = None
+) -> None:
+    params = {
+        "peer_id": peer_id,
+        "message": text,
+        "random_id": random.randint(0, 2**31 - 1),
+    }
+    if keyboard is not None:
+        params["keyboard"] = json.dumps(keyboard, ensure_ascii=False)
+    await vk_call(client, "messages.send", post=True, **params)
 
 
 def split_text(text: str, limit: int = MAX_VK_LEN) -> list[str]:
@@ -303,8 +321,26 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         [a.get("type") for a in attachments],
     )
 
-    if text.lower() in ("начать", "start", "помощь", "help", "привет", "/start"):
-        await send_message(client, peer_id, HELP_TEXT)
+    low = text.lower()
+    if low in ("начать", "start", "помощь", "help", "привет", "/start", BTN_HELP.lower()):
+        await send_message(client, peer_id, HELP_TEXT, keyboard=MAIN_KEYBOARD)
+        return
+    if low in ("сброс", "/reset", BTN_RESET.lower()):
+        history.pop(peer_id, None)
+        await send_message(
+            client,
+            peer_id,
+            "История очищена. Пришлите новую задачу.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in ("фото", BTN_PHOTO.lower()):
+        await send_message(
+            client,
+            peer_id,
+            "Пришлите фото задачи — разберу и решу.",
+            keyboard=MAIN_KEYBOARD,
+        )
         return
 
     photo = photo_url(attachments)
