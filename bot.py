@@ -246,34 +246,27 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         body = {"model": model, "messages": messages, "temperature": 0.5}
-        for attempt in range(2):
-            try:
-                r = await client.post(
-                    url,
-                    headers=headers,
-                    json=body,
-                    timeout=httpx.Timeout(90.0, connect=10.0),
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    message = (data.get("choices") or [{}])[0].get("message") or {}
-                    content = message.get("content") or ""
-                    if content.strip():
-                        log.info("LLM %s ответил (%d симв.)", model, len(content))
-                        return latex_to_text(content)
-                    errors.append(f"{model}: пустой ответ")
-                    log.warning("LLM %s вернул пустой ответ", model)
-                    break
-                errors.append(f"{model}: HTTP {r.status_code} {r.text[:150]}")
-                log.warning("LLM %s -> %s (попытка %s)", model, r.status_code, attempt + 1)
-                if r.status_code in (429, 500, 502, 503, 504):
-                    await asyncio.sleep(2 + attempt * 2)
-                    continue
-                break
-            except Exception as e:
-                errors.append(f"{model}: {type(e).__name__}")
-                log.warning("LLM %s -> %s (попытка %s)", model, type(e).__name__, attempt + 1)
-                await asyncio.sleep(2 + attempt * 2)
+        try:
+            r = await client.post(
+                url,
+                headers=headers,
+                json=body,
+                timeout=httpx.Timeout(90.0, connect=8.0),
+            )
+            if r.status_code == 200:
+                data = r.json()
+                message = (data.get("choices") or [{}])[0].get("message") or {}
+                content = message.get("content") or ""
+                if content.strip():
+                    log.info("LLM %s ответил (%d симв.)", model, len(content))
+                    return latex_to_text(content)
+                errors.append(f"{model}: пустой ответ")
+                continue
+            errors.append(f"{model}: HTTP {r.status_code} {r.text[:120]}")
+            log.warning("LLM %s -> %s", model, r.status_code)
+        except Exception as e:
+            errors.append(f"{model}: {type(e).__name__}")
+            log.warning("LLM %s -> %s", model, type(e).__name__)
     detail = " | ".join(errors[-6:])
     log.error("Все модели LLM недоступны: %s", detail)
     return (
