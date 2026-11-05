@@ -53,6 +53,8 @@ class Settings:
     fallback_base_url: str = ""
     fallback_api_key: str = ""
     fallback_model: str = ""
+    # VK ID или username администратора (для кнопки «Помощь»)
+    admin_vk: str = ""
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod
@@ -72,5 +74,6 @@ class Settings:
             fallback_base_url=os.getenv("FALLBACK_BASE_URL", "").strip(),
             fallback_api_key=os.getenv("FALLBACK_API_KEY", "").strip(),
             fallback_model=os.getenv("FALLBACK_MODEL", "").strip(),
+            admin_vk=os.getenv("ADMIN_VK", "").strip(),
             system_prompt=os.getenv("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
         )
