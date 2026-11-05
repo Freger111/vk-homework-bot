@@ -1,0 +1,12 @@
+# Секреты
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Рантайм-данные
+data.json
