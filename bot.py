@@ -60,13 +60,7 @@ BTN_LEVEL = "⭐ Уровень"
 BTN_HELP = "❓ Помощь"
 BTN_RESET = "🧹 Сбросить"
 
-HELP_BUTTON = (
-    {
-        "action": {"type": "open_link", "label": BTN_HELP, "link": admin_chat_url()},
-    }
-    if ADMIN_VK
-    else {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"}
-)
+HELP_BUTTON = {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"}
 
 MAIN_KEYBOARD = {
     "one_time": False,
@@ -499,7 +493,10 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
 
     low = text.lower()
     if low in ("начать", "start", "помощь", "help", "привет", "/start", BTN_HELP.lower()):
-        await send_message(client, peer_id, HELP_TEXT, keyboard=MAIN_KEYBOARD)
+        text_out = HELP_TEXT
+        if ADMIN_VK:
+            text_out += f"\n\nВопросы администратору: {admin_chat_url()}"
+        await send_message(client, peer_id, text_out, keyboard=MAIN_KEYBOARD)
         return
     if low in ("сброс", "/reset", BTN_RESET.lower()):
         history.pop(peer_id, None)
