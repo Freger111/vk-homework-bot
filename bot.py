@@ -469,48 +469,49 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
 
 async def stt_gemini(client: httpx.AsyncClient, audio_bytes: bytes) -> str | None:
     """Распознаёт речь через Gemini (native API)."""
-    base = settings.llm_base_url.rstrip("/")
-    if base.endswith("/openai"):
-        base = base[: -len("/openai")]
-    key = settings.llm_api_key
-    if not key or "googleapis" not in base:
-        return None
-    url = f"{base}/models/{settings.llm_model}:generateContent?key={key}"
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": "Расшифруй это голосовое сообщение в текст. "
-                        "Верни только распознанный текст, без пояснений."
-                    },
-                    {
-                        "inline_data": {
-                            "mime_type": "audio/ogg",
-                            "data": base64.b64encode(audio_bytes).decode(),
-                        }
-                    },
-                ]
-            }
-        ]
-    }
-    try:
-        r = await client.post(
-            url, json=payload, timeout=httpx.Timeout(90.0, connect=8.0)
-        )
-        if r.status_code != 200:
-            log.warning("STT: HTTP %s %s", r.status_code, r.text[:200])
-            return None
-        data = r.json()
-        cands = data.get("candidates") or []
-        if not cands:
-            return None
-        parts = cands[0].get("content", {}).get("parts") or []
-        text = " ".join(p.get("text", "") for p in parts).strip()
-        return text or None
-    except Exception as e:
-        log.warning("STT: %s", e)
-        return None
+    audio_b64 = base64.b64encode(audio_bytes).decode()
+    candidates = [
+        (settings.llm_base_url, settings.llm_api_key, settings.llm_model),
+        (settings.fallback_base_url, settings.fallback_api_key, settings.fallback_model),
+    ]
+    for raw_base, key, model in candidates:
+        if not key or "googleapis" not in (raw_base or ""):
+            continue
+        base = raw_base.rstrip("/")
+        if base.endswith("/openai"):
+            base = base[: -len("/openai")]
+        url = f"{base}/models/{model}:generateContent?key={key}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": "Расшифруй это голосовое сообщение в текст. "
+                            "Верни только распознанный текст, без пояснений."
+                        },
+                        {"inline_data": {"mime_type": "audio/ogg", "data": audio_b64}},
+                    ]
+                }
+            ]
+        }
+        try:
+            r = await client.post(
+                url, json=payload, timeout=httpx.Timeout(90.0, connect=8.0)
+            )
+            if r.status_code != 200:
+                log.warning("STT: HTTP %s %s", r.status_code, r.text[:200])
+                continue
+            data = r.json()
+            cands = data.get("candidates") or []
+            if not cands:
+                continue
+            parts = cands[0].get("content", {}).get("parts") or []
+            text = " ".join(p.get("text", "") for p in parts).strip()
+            if text:
+                return text
+        except Exception as e:
+            log.warning("STT: %s", e)
+    return None
 
 
 def photo_url(attachments: list) -> str | None:
