@@ -467,6 +467,52 @@ async def ask_llm(client: httpx.AsyncClient, peer_id: int) -> str:
     )
 
 
+async def stt_gemini(client: httpx.AsyncClient, audio_bytes: bytes) -> str | None:
+    """Распознаёт речь через Gemini (native API)."""
+    base = settings.llm_base_url.rstrip("/")
+    if base.endswith("/openai"):
+        base = base[: -len("/openai")]
+    key = settings.llm_api_key
+    if not key or "googleapis" not in base:
+        return None
+    url = f"{base}/models/{settings.llm_model}:generateContent?key={key}"
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": "Расшифруй это голосовое сообщение в текст. "
+                        "Верни только распознанный текст, без пояснений."
+                    },
+                    {
+                        "inline_data": {
+                            "mime_type": "audio/ogg",
+                            "data": base64.b64encode(audio_bytes).decode(),
+                        }
+                    },
+                ]
+            }
+        ]
+    }
+    try:
+        r = await client.post(
+            url, json=payload, timeout=httpx.Timeout(90.0, connect=8.0)
+        )
+        if r.status_code != 200:
+            log.warning("STT: HTTP %s %s", r.status_code, r.text[:200])
+            return None
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            return None
+        parts = cands[0].get("content", {}).get("parts") or []
+        text = " ".join(p.get("text", "") for p in parts).strip()
+        return text or None
+    except Exception as e:
+        log.warning("STT: %s", e)
+        return None
+
+
 def photo_url(attachments: list) -> str | None:
     """Возвращает URL самого большого фото из вложений."""
     for a in attachments or []:
@@ -475,6 +521,15 @@ def photo_url(attachments: list) -> str | None:
             if sizes:
                 best = max(sizes, key=lambda s: s.get("width", 0) * s.get("height", 0))
                 return best.get("url")
+    return None
+
+
+def audio_url(attachments: list) -> str | None:
+    """Возвращает URL голосового сообщения."""
+    for a in attachments or []:
+        if a.get("type") == "audio_message":
+            am = a.get("audio_message") or {}
+            return am.get("link_mp3") or am.get("link_ogg")
     return None
 
 
@@ -1157,6 +1212,25 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             FOLLOWUP_KEYBOARD,
         )
         return
+    if not text:
+        audio = audio_url(attachments)
+        if audio:
+            await send_message(client, peer_id, "⏳ Распознаю голосовое…")
+            try:
+                r = await client.get(audio, timeout=60)
+                text = (await stt_gemini(client, r.content) or "").strip()
+            except Exception as e:
+                log.warning("Голосовое: %s", e)
+            if not text:
+                await send_message(
+                    client,
+                    peer_id,
+                    "Не удалось распознать голосовое. Напишите задачу текстом.",
+                    keyboard=MAIN_KEYBOARD,
+                )
+                return
+            await send_message(client, peer_id, f"🎤 «{text[:300]}»")
+
     if (text or photo_url(attachments)) and not check_limit(peer_id):
         await send_message(
             client,
