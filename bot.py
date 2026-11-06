@@ -479,7 +479,6 @@ async def run_llm_task(
 
 
 async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
-    log.info("update: %s", update.get("type"))
     if update.get("type") != "message_new":
         return
     msg = update.get("object", {}).get("message", {})
@@ -661,11 +660,6 @@ async def main() -> None:
                     server, params={"act": "a_check", "key": key, "ts": ts, "wait": 25}
                 )
                 data = r.json()
-                log.info(
-                    "a_check: ts=%s updates=%d",
-                    data.get("ts"),
-                    len(data.get("updates") or []),
-                )
                 if "failed" in data:
                     log.warning("Long Poll сброшен (failed=%s), переинициализация", data["failed"])
                     key, server, ts = await init_longpoll(client)
