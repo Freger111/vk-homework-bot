@@ -55,6 +55,10 @@ class Settings:
     fallback_model: str = ""
     # VK ID или username администратора (для кнопки «Помощь»)
     admin_vk: str = ""
+    # Числовой VK ID администратора (для админ-команд)
+    admin_id: str = ""
+    # Лимит бесплатных задач в день
+    free_limit: int = 5
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
     @classmethod
@@ -75,5 +79,7 @@ class Settings:
             fallback_api_key=os.getenv("FALLBACK_API_KEY", "").strip(),
             fallback_model=os.getenv("FALLBACK_MODEL", "").strip(),
             admin_vk=os.getenv("ADMIN_VK", "").strip(),
+            admin_id=os.getenv("ADMIN_ID", "").strip(),
+            free_limit=int(os.getenv("FREE_LIMIT", "5") or 5),
             system_prompt=os.getenv("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
         )
