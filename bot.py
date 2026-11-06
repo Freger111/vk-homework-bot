@@ -641,7 +641,7 @@ def draw_on_image(data: bytes, pts: list) -> bytes | None:
         width = max(3, w // 250)
         draw.line(coords + [coords[0]], fill=(255, 0, 0), width=width)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=90)
+        img.save(buf, format="PNG")
         return buf.getvalue()
     except Exception as e:
         log.warning("Не удалось дорисовать на фото: %s", e)
