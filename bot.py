@@ -469,12 +469,17 @@ async def run_llm_task(
 
 
 async def _upload_and_send(
-    client: httpx.AsyncClient, peer_id: int, png: bytes, text: str
+    client: httpx.AsyncClient,
+    peer_id: int,
+    data: bytes,
+    text: str,
+    filename: str = "img.png",
+    mime: str = "image/png",
 ) -> bool:
     try:
         up = await vk_call(client, "photos.getMessagesUploadServer", peer_id=peer_id)
         r = await client.post(
-            up["upload_url"], files={"photo": ("img.png", png, "image/png")}
+            up["upload_url"], files={"photo": (filename, data, mime)}
         )
         data = r.json()
         if not data.get("photo"):
@@ -635,6 +640,7 @@ def draw_on_image(
         from PIL import Image, ImageDraw
 
         img = Image.open(io.BytesIO(data)).convert("RGB")
+        img.thumbnail((1600, 1600))
         w, h = img.size
         draw = ImageDraw.Draw(img)
         lw = max(3, w // 250)
@@ -654,7 +660,7 @@ def draw_on_image(
             if name:
                 draw.text((px + r + 2, py - r), name, fill=(0, 0, 0))
         buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        img.save(buf, format="JPEG", quality=88)
         return buf.getvalue()
     except Exception as e:
         log.warning("Не удалось дорисовать на фото: %s", e)
@@ -768,7 +774,12 @@ async def section_task(
                 annotated = draw_on_image(photo_bytes, section, points, helpers)
                 if annotated:
                     await _upload_and_send(
-                        client, peer_id, annotated, "📐 Сечение на фото:"
+                        client,
+                        peer_id,
+                        annotated,
+                        "📐 Сечение на фото:",
+                        filename="photo.jpg",
+                        mime="image/jpeg",
                     )
             return
 
