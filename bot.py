@@ -526,6 +526,107 @@ async def draw_section(
     return await _upload_and_send(client, peer_id, png, "📐 Форма сечения:")
 
 
+def _parse_point3(line: str):
+    parts = line.replace(";", ",").replace(" ", ",").split(",")
+    nums = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        try:
+            nums.append(float(p))
+        except ValueError:
+            return None
+    if len(nums) >= 3:
+        return (nums[0], nums[1], nums[2])
+    return None
+
+
+def _parse_section_data(raw: str):
+    vertices, edges, section = [], [], []
+    solution = raw
+    marker = "ВЕРШИНЫ:"
+    if marker in raw:
+        solution = raw.split(marker, 1)[0]
+        tail = raw.split(marker, 1)[1]
+        groups = {"vertices": [], "edges": [], "section": []}
+        cur = "vertices"
+        for line in tail.splitlines():
+            s = line.strip()
+            if s.startswith("РЁБРА:"):
+                cur = "edges"
+                continue
+            if s.startswith("СЕЧЕНИЕ:"):
+                cur = "section"
+                continue
+            if not s:
+                continue
+            groups[cur].append(s)
+        for line in groups["vertices"]:
+            p = _parse_point3(line)
+            if p:
+                vertices.append(p)
+        for line in groups["edges"]:
+            parts = line.replace(";", ",").split(",")
+            if len(parts) == 2:
+                try:
+                    edges.append((int(float(parts[0])), int(float(parts[1]))))
+                except ValueError:
+                    pass
+        for line in groups["section"]:
+            p = _parse_point3(line)
+            if p:
+                section.append(p)
+    return vertices, edges, section, solution
+
+
+async def draw_section_3d(
+    client: httpx.AsyncClient,
+    peer_id: int,
+    vertices: list,
+    edges: list,
+    section: list,
+) -> bool:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+        fig = plt.figure(figsize=(6, 6), dpi=110)
+        ax = fig.add_subplot(111, projection="3d")
+
+        for a, b in edges:
+            if 0 <= a < len(vertices) and 0 <= b < len(vertices):
+                pa, pb = vertices[a], vertices[b]
+                ax.plot(
+                    [pa[0], pb[0]],
+                    [pa[1], pb[1]],
+                    [pa[2], pb[2]],
+                    color="#333",
+                    linewidth=1,
+                )
+        for v in vertices:
+            ax.scatter([v[0]], [v[1]], [v[2]], color="#333", s=12)
+        if len(section) >= 3:
+            poly = Poly3DCollection(
+                [section], alpha=0.45, facecolor="#2b6cb0", edgecolor="#1a4f8a"
+            )
+            ax.add_collection3d(poly)
+
+        ax.set_box_aspect((1, 1, 1))
+        ax.set_title("Сечение (3D)")
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        png = buf.getvalue()
+    except Exception as e:
+        log.warning("3D-сечение не нарисовано: %s", e)
+        return False
+    return await _upload_and_send(client, peer_id, png, "📐 Сечение (3D):")
+
+
 async def section_task(
     client: httpx.AsyncClient, peer_id: int, text: str, attachments: list
 ) -> None:
@@ -535,9 +636,20 @@ async def section_task(
     busy.add(peer_id)
     try:
         instruction = (
-            "Реши задачу на сечение пошагово. В самом конце добавь строку "
-            "'ТОЧКИ СЕЧЕНИЯ:' и после неё 3–8 строк вида 'x,y' — вершины сечения "
-            "в плоскости сечения (по порядку обхода, в удобном масштабе)."
+            "Реши задачу на сечение пошагово. В конце добавь блок данных для 3D-рисунка "
+            "строго в таком формате:\n"
+            "ВЕРШИНЫ:\n"
+            "x,y,z\n"
+            "x,y,z\n"
+            "РЁБРА:\n"
+            "0,1\n"
+            "1,2\n"
+            "СЕЧЕНИЕ:\n"
+            "x,y,z\n"
+            "x,y,z\n"
+            "ВЕРШИНЫ — вершины фигуры по порядку (без индексов, только числа), "
+            "РЁБРА — пары индексов вершин, СЕЧЕНИЕ — вершины многоугольника сечения "
+            "в 3D по порядку обхода. Только числа через запятую, без текста."
         )
         photo = photo_url(attachments)
         if photo:
@@ -563,21 +675,11 @@ async def section_task(
         raw = await ask_llm(client, peer_id)
         push(peer_id, "assistant", raw)
 
-        solution, pts = raw, []
-        if "ТОЧКИ СЕЧЕНИЯ" in raw:
-            solution, tail = raw.split("ТОЧКИ СЕЧЕНИЯ", 1)
-            for line in tail.splitlines():
-                line = line.replace(";", ",").strip()
-                if "," in line:
-                    a, b = line.split(",", 1)
-                    try:
-                        pts.append((float(a.strip()), float(b.strip())))
-                    except ValueError:
-                        continue
+        vertices, edges, section, solution = _parse_section_data(raw)
 
         await send_long(client, peer_id, solution.strip() or raw)
-        if len(pts) >= 3:
-            await draw_section(client, peer_id, pts)
+        if len(vertices) >= 3 and len(edges) >= 3 and len(section) >= 3:
+            await draw_section_3d(client, peer_id, vertices, edges, section)
     except Exception as e:
         log.exception("Ошибка сечения")
         await send_message(
