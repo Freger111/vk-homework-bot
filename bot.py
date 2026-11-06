@@ -27,7 +27,7 @@ VK_API = "https://api.vk.com/method"
 API_VERSION = "5.131"
 
 history: dict[int, list[dict]] = {}
-MAX_HISTORY = 12
+MAX_HISTORY = 6
 levels: dict[int, str] = {}
 awaiting_level: set[int] = set()
 
@@ -426,10 +426,7 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
     photo = photo_url(attachments)
     if photo:
         try:
-            try:
-                await vk_call(client, "messages.setActivity", peer_id=peer_id, type="typing")
-            except Exception:
-                pass
+            await send_message(client, peer_id, "⏳ Решаю задачу с фото…")
             r = await client.get(
                 photo,
                 headers={"User-Agent": "Mozilla/5.0"},
@@ -476,10 +473,7 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         return
 
     if text:
-        try:
-            await vk_call(client, "messages.setActivity", peer_id=peer_id, type="typing")
-        except Exception:
-            pass
+        await send_message(client, peer_id, "⏳ Решаю задачу…")
         push(peer_id, "user", text)
         reply = await ask_llm(client, peer_id)
         push(peer_id, "assistant", reply)
