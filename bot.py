@@ -291,11 +291,15 @@ LLM_FALLBACK_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash"]
 
 
 def strip_old_images(messages: list[dict]) -> list[dict]:
-    """Оставляет картинку только в последнем сообщении — чтобы не раздувать запрос."""
+    """Оставляет только самую свежую картинку — чтобы не раздувать запрос."""
+    last_img = -1
+    for i, m in enumerate(messages):
+        if isinstance(m.get("content"), list):
+            last_img = i
     out = []
     for i, m in enumerate(messages):
         content = m.get("content")
-        if isinstance(content, list) and i != len(messages) - 1:
+        if isinstance(content, list) and i != last_img:
             texts = [p.get("text", "") for p in content if p.get("type") == "text"]
             out.append(
                 {"role": m["role"], "content": " ".join(t for t in texts if t) or "[фото]"}
