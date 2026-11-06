@@ -31,6 +31,7 @@ MAX_HISTORY = 6
 levels: dict[int, str] = {}
 awaiting_level: set[int] = set()
 awaiting_graph: set[int] = set()
+awaiting_section: set[int] = set()
 busy: set[int] = set()
 
 # Ссылка на чат с администратором (для кнопки «Помощь»)
@@ -492,6 +493,124 @@ async def run_llm_task(
         busy.discard(peer_id)
 
 
+async def _upload_and_send(
+    client: httpx.AsyncClient, peer_id: int, png: bytes, text: str
+) -> bool:
+    try:
+        up = await vk_call(client, "photos.getMessagesUploadServer", peer_id=peer_id)
+        r = await client.post(
+            up["upload_url"], files={"photo": ("img.png", png, "image/png")}
+        )
+        data = r.json()
+        saved = await vk_call(
+            client,
+            "photos.saveMessagesPhoto",
+            photo=data["photo"],
+            server=data["server"],
+            hash=data["hash"],
+        )
+        p = saved[0]
+        att = f"photo{p['owner_id']}_{p['id']}"
+        await send_message(
+            client, peer_id, text, attachment=att, keyboard=FOLLOWUP_KEYBOARD
+        )
+        return True
+    except Exception as e:
+        log.warning("Загрузка картинки не удалась: %s", e)
+        return False
+
+
+async def draw_section(
+    client: httpx.AsyncClient, peer_id: int, pts: list, title: str = "Сечение"
+) -> bool:
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        xs = [p[0] for p in pts] + [pts[0][0]]
+        ys = [p[1] for p in pts] + [pts[0][1]]
+        fig, ax = plt.subplots(figsize=(5, 5), dpi=110)
+        ax.plot(xs, ys, color="#2b6cb0", linewidth=2)
+        ax.fill(xs, ys, color="#2b6cb0", alpha=0.15)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.grid(True, alpha=0.3)
+        ax.set_title(title[:60])
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        png = buf.getvalue()
+    except Exception as e:
+        log.warning("Сечение не нарисовано: %s", e)
+        return False
+    return await _upload_and_send(client, peer_id, png, "📐 Форма сечения:")
+
+
+async def section_task(
+    client: httpx.AsyncClient, peer_id: int, text: str, attachments: list
+) -> None:
+    if peer_id in busy:
+        await send_message(client, peer_id, "⏳ Секунду, я ещё решаю предыдущую задачу…")
+        return
+    busy.add(peer_id)
+    try:
+        instruction = (
+            "Реши задачу на сечение пошагово. В самом конце добавь строку "
+            "'ТОЧКИ СЕЧЕНИЯ:' и после неё 3–8 строк вида 'x,y' — вершины сечения "
+            "в плоскости сечения (по порядку обхода, в удобном масштабе)."
+        )
+        photo = photo_url(attachments)
+        if photo:
+            await send_message(client, peer_id, "⏳ Решаю и рисую сечение…")
+            r = await client.get(
+                photo, headers={"User-Agent": "Mozilla/5.0"}, timeout=60
+            )
+            if r.status_code != 200 or not r.content:
+                raise RuntimeError(f"фото не скачалось (HTTP {r.status_code})")
+            b64 = prepare_image(r.content)
+            content = [
+                {"type": "text", "text": instruction + "\n\n" + (text or "")},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                },
+            ]
+            push(peer_id, "user", content)
+        else:
+            await send_message(client, peer_id, "⏳ Решаю и рисую сечение…")
+            push(peer_id, "user", f"{instruction}\n\nУсловие: {text}")
+
+        raw = await ask_llm(client, peer_id)
+        push(peer_id, "assistant", raw)
+
+        solution, pts = raw, []
+        if "ТОЧКИ СЕЧЕНИЯ" in raw:
+            solution, tail = raw.split("ТОЧКИ СЕЧЕНИЯ", 1)
+            for line in tail.splitlines():
+                line = line.replace(";", ",").strip()
+                if "," in line:
+                    a, b = line.split(",", 1)
+                    try:
+                        pts.append((float(a.strip()), float(b.strip())))
+                    except ValueError:
+                        continue
+
+        await send_long(client, peer_id, solution.strip() or raw)
+        if len(pts) >= 3:
+            await draw_section(client, peer_id, pts)
+    except Exception as e:
+        log.exception("Ошибка сечения")
+        await send_message(
+            client,
+            peer_id,
+            f"Не удалось разобрать сечение ({type(e).__name__}): {e}",
+            keyboard=MAIN_KEYBOARD,
+        )
+    finally:
+        busy.discard(peer_id)
+
+
 async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
     if update.get("type") != "message_new":
         return
@@ -536,10 +655,11 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         )
         return
     if low in (BTN_SECTION.lower(), "сечение"):
+        awaiting_section.add(peer_id)
         await send_message(
             client,
             peer_id,
-            "Пришлите фото или текст задачи на сечение — разберу построение по шагам.",
+            "Пришлите фото или текст задачи на сечение — решу и нарисую форму сечения.",
             keyboard=MAIN_KEYBOARD,
         )
         return
@@ -598,6 +718,10 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
     if peer_id in awaiting_graph and text:
         awaiting_graph.discard(peer_id)
         await plot_task(client, peer_id, text)
+        return
+    if peer_id in awaiting_section and (text or attachments):
+        awaiting_section.discard(peer_id)
+        await section_task(client, peer_id, text, attachments)
         return
 
     photo = photo_url(attachments)
