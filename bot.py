@@ -13,6 +13,8 @@ import json
 import logging
 import random
 import re
+import time
+from pathlib import Path
 
 import httpx
 
@@ -44,14 +46,99 @@ def admin_chat_url() -> str:
     return f"https://vk.me/{ADMIN_VK.lstrip('@')}"
 
 
+ADMIN_ID = 0
+try:
+    ADMIN_ID = int(
+        settings.admin_id or (settings.admin_vk if settings.admin_vk.isdigit() else "0")
+    )
+except ValueError:
+    ADMIN_ID = 0
+
+
+def is_admin(peer_id: int) -> bool:
+    return bool(ADMIN_ID) and int(peer_id) == ADMIN_ID
+
+
+# --- Хранение данных (история, лимиты, баны) ---
+DATA_FILE = Path(__file__).resolve().parent / "data.json"
+FREE_LIMIT = settings.free_limit
+_data: dict = {}
+
+
+def load_data() -> None:
+    global _data
+    try:
+        if DATA_FILE.exists():
+            _data = json.loads(DATA_FILE.read_text(encoding="utf-8"))
+    except Exception as e:
+        log.warning("data.json не прочитан: %s", e)
+        _data = {}
+
+
+def save_data() -> None:
+    try:
+        DATA_FILE.write_text(
+            json.dumps(_data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as e:
+        log.warning("data.json не сохранён: %s", e)
+
+
+def user(peer_id: int) -> dict:
+    u = _data.setdefault(str(peer_id), {})
+    u.setdefault("tasks", [])
+    u.setdefault("usage", {"date": "", "count": 0})
+    u.setdefault("unlimited", False)
+    u.setdefault("banned", False)
+    return u
+
+
+def add_task(peer_id: int, task: str, answer: str) -> None:
+    u = user(peer_id)
+    u["tasks"].append(
+        {
+            "task": (task or "")[:300],
+            "answer": (answer or "")[:500],
+            "ts": int(time.time()),
+        }
+    )
+    if len(u["tasks"]) > 30:
+        u["tasks"] = u["tasks"][-30:]
+    save_data()
+
+
+def check_limit(peer_id: int) -> bool:
+    if is_admin(peer_id):
+        return True
+    u = user(peer_id)
+    if u.get("unlimited"):
+        return True
+    today = time.strftime("%Y-%m-%d")
+    if u["usage"].get("date") != today:
+        u["usage"] = {"date": today, "count": 0}
+    limit = int(u.get("limit_override", FREE_LIMIT))
+    return u["usage"].get("count", 0) < limit
+
+
+def bump_usage(peer_id: int) -> None:
+    u = user(peer_id)
+    today = time.strftime("%Y-%m-%d")
+    if u["usage"].get("date") != today:
+        u["usage"] = {"date": today, "count": 0}
+    u["usage"]["count"] = u["usage"].get("count", 0) + 1
+    save_data()
+
+
 # Запас под лимит VK в 4096 символов на одно сообщение
 MAX_VK_LEN = 4000
 
 HELP_TEXT = (
     "Привет! Я решаю домашнее задание 📚\n\n"
     "• Напиши задачу текстом — решу пошагово с объяснением.\n"
-    "• Пришли фото задачи — разберу.\n\n"
-    "Кнопки внизу: фото, сечение, график, уровень, помощь, сброс."
+    "• Пришли фото задачи — разберу.\n"
+    "• «📚 Мои задачи» — история решённых.\n\n"
+    f"Бесплатно: {FREE_LIMIT} задач в день.\n\n"
+    "Кнопки внизу: фото, сечение, график, уровень, помощь, мои задачи, сброс."
 )
 
 BTN_PHOTO = "📷 Прислать фото"
@@ -60,6 +147,7 @@ BTN_GRAPH = "📊 График"
 BTN_LEVEL = "⭐ Уровень"
 BTN_HELP = "❓ Помощь"
 BTN_RESET = "🧹 Сбросить"
+BTN_HISTORY = "📚 Мои задачи"
 
 HELP_BUTTON = {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"}
 
@@ -75,7 +163,10 @@ MAIN_KEYBOARD = {
             {"action": {"type": "text", "label": BTN_LEVEL}, "color": "secondary"},
             HELP_BUTTON,
         ],
-        [{"action": {"type": "text", "label": BTN_RESET}, "color": "secondary"}],
+        [
+            {"action": {"type": "text", "label": BTN_HISTORY}, "color": "secondary"},
+            {"action": {"type": "text", "label": BTN_RESET}, "color": "secondary"},
+        ],
     ],
 }
 
@@ -463,6 +554,8 @@ async def run_llm_task(
         push(peer_id, "user", prompt)
         reply = await ask_llm(client, peer_id)
         push(peer_id, "assistant", reply)
+        bump_usage(peer_id)
+        add_task(peer_id, prompt, reply)
         await send_long(client, peer_id, reply, keyboard=keyboard)
     finally:
         busy.discard(peer_id)
@@ -782,6 +875,8 @@ async def section_task(
             push(peer_id, "user", content)
             raw = await ask_llm(client, peer_id)
             push(peer_id, "assistant", raw)
+            bump_usage(peer_id)
+            add_task(peer_id, text or "фото сечения", raw)
             solution, section, points, helpers = _parse_image_lines(raw)
             log.info(
                 "Сечение: section=%d points=%d helpers=%d",
@@ -839,6 +934,8 @@ async def section_task(
         push(peer_id, "user", f"{instruction}\n\nУсловие: {text}")
         raw = await ask_llm(client, peer_id)
         push(peer_id, "assistant", raw)
+        bump_usage(peer_id)
+        add_task(peer_id, text, raw)
         vertices, edges, section, solution = _parse_section_data(raw)
         await send_long(client, peer_id, solution.strip() or raw)
         if len(vertices) >= 3 and len(edges) >= 3 and len(section) >= 3:
@@ -853,6 +950,86 @@ async def section_task(
         )
     finally:
         busy.discard(peer_id)
+
+
+async def admin_command(client: httpx.AsyncClient, peer_id: int, text: str) -> bool:
+    low = text.lower()
+    parts = text.split()
+    if low.startswith("/stats"):
+        today = time.strftime("%Y-%m-%d")
+        users = len(_data)
+        total = sum(len(v.get("tasks", [])) for v in _data.values())
+        today_tasks = sum(
+            v.get("usage", {}).get("count", 0)
+            for v in _data.values()
+            if v.get("usage", {}).get("date") == today
+        )
+        banned = sum(1 for v in _data.values() if v.get("banned"))
+        await send_message(
+            client,
+            peer_id,
+            f"👥 Пользователей: {users}\n"
+            f"📝 Задач всего: {total}\n"
+            f"📅 Задач сегодня: {today_tasks}\n"
+            f"🚫 Забанено: {banned}\n"
+            f"👑 Твой ID: {ADMIN_ID}",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return True
+    if low.startswith("/broadcast"):
+        msg = text[len("/broadcast"):].strip()
+        if not msg:
+            await send_message(client, peer_id, "Использование: /broadcast текст")
+            return True
+        sent = 0
+        for uid in list(_data.keys()):
+            try:
+                await send_message(client, int(uid), "📢 " + msg)
+                sent += 1
+            except Exception:
+                pass
+        await send_message(client, peer_id, f"Разослано: {sent}")
+        return True
+    if low.startswith("/users"):
+        lines = []
+        for uid, v in list(_data.items())[:30]:
+            mark = " 🚫" if v.get("banned") else ""
+            inf = " ∞" if v.get("unlimited") else ""
+            lines.append(f"{uid}: задач {len(v.get('tasks', []))}{mark}{inf}")
+        await send_message(
+            client, peer_id, "Пользователи:\n" + ("\n".join(lines) or "пусто")
+        )
+        return True
+    if len(parts) >= 2 and parts[0].lower() in ("/ban", "/unban", "/grant", "/revoke"):
+        try:
+            uid = int(parts[1])
+        except ValueError:
+            await send_message(client, peer_id, "Нужен числовой ID.")
+            return True
+        u = user(uid)
+        cmd = parts[0].lower()
+        if cmd == "/ban":
+            u["banned"] = True
+        elif cmd == "/unban":
+            u["banned"] = False
+        elif cmd == "/grant":
+            u["unlimited"] = True
+        elif cmd == "/revoke":
+            u["unlimited"] = False
+        save_data()
+        await send_message(client, peer_id, f"Готово: {cmd} {uid}", keyboard=MAIN_KEYBOARD)
+        return True
+    if len(parts) >= 3 and parts[0].lower() == "/limit":
+        try:
+            uid, n = int(parts[1]), int(parts[2])
+        except ValueError:
+            await send_message(client, peer_id, "Использование: /limit <id> <n>")
+            return True
+        user(uid)["limit_override"] = n
+        save_data()
+        await send_message(client, peer_id, f"Лимит {uid}: {n}", keyboard=MAIN_KEYBOARD)
+        return True
+    return False
 
 
 async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
@@ -872,6 +1049,12 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         [a.get("type") for a in attachments],
     )
 
+    if is_admin(peer_id) and text.startswith("/"):
+        if await admin_command(client, peer_id, text):
+            return
+    if user(peer_id).get("banned") and not is_admin(peer_id):
+        return
+
     low = text.lower()
     if low in ("начать", "start", "помощь", "help", "привет", "/start", BTN_HELP.lower()):
         text_out = HELP_TEXT
@@ -887,6 +1070,21 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             client,
             peer_id,
             "История и уровень очищены. Пришлите новую задачу.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in (BTN_HISTORY.lower(), "мои задачи", "история"):
+        tasks = user(peer_id).get("tasks", [])[-5:]
+        if not tasks:
+            await send_message(
+                client, peer_id, "Пока нет решённых задач.", keyboard=MAIN_KEYBOARD
+            )
+            return
+        lines = [f"{i}. {t['task'][:80]}" for i, t in enumerate(reversed(tasks), 1)]
+        await send_message(
+            client,
+            peer_id,
+            "📚 Последние задачи:\n" + "\n".join(lines),
             keyboard=MAIN_KEYBOARD,
         )
         return
@@ -959,6 +1157,16 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             FOLLOWUP_KEYBOARD,
         )
         return
+    if (text or photo_url(attachments)) and not check_limit(peer_id):
+        await send_message(
+            client,
+            peer_id,
+            f"Лимит бесплатных задач на сегодня исчерпан ({FREE_LIMIT}).\n"
+            "Напишите администратору, чтобы увеличить лимит или оформить подписку.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+
     if peer_id in awaiting_graph and text:
         awaiting_graph.discard(peer_id)
         await plot_task(client, peer_id, text)
@@ -1002,6 +1210,8 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             push(peer_id, "user", content)
             reply = await ask_llm(client, peer_id)
             push(peer_id, "assistant", reply)
+            bump_usage(peer_id)
+            add_task(peer_id, "фото задачи", reply)
             await send_long(client, peer_id, reply, keyboard=FOLLOWUP_KEYBOARD)
         except Exception as e:
             log.exception("Ошибка обработки фото")
@@ -1033,6 +1243,7 @@ async def init_longpoll(client: httpx.AsyncClient) -> tuple[str, str, str]:
 
 
 async def main() -> None:
+    load_data()
     log.info("VK-бот запущен (модель: %s)", settings.llm_model)
     async with httpx.AsyncClient(timeout=120) as client:
         key, server, ts = await init_longpoll(client)
