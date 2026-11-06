@@ -627,6 +627,44 @@ async def draw_section_3d(
     return await _upload_and_send(client, peer_id, png, "📐 Сечение (3D):")
 
 
+def draw_on_image(data: bytes, pts: list) -> bytes | None:
+    """Рисует замкнутую ломаную по точкам (в долях 0..1) на фото."""
+    try:
+        from PIL import Image, ImageDraw
+
+        img = Image.open(io.BytesIO(data)).convert("RGB")
+        w, h = img.size
+        coords = [(p[0] * w, p[1] * h) for p in pts]
+        if len(coords) < 2:
+            return None
+        draw = ImageDraw.Draw(img)
+        width = max(3, w // 250)
+        draw.line(coords + [coords[0]], fill=(255, 0, 0), width=width)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+    except Exception as e:
+        log.warning("Не удалось дорисовать на фото: %s", e)
+        return None
+
+
+def _parse_image_lines(raw: str):
+    solution = raw
+    pts = []
+    marker = "ЛИНИИ СЕЧЕНИЯ"
+    if marker in raw:
+        solution, tail = raw.split(marker, 1)
+        for line in tail.splitlines():
+            line = line.replace(";", ",").strip()
+            if "," in line:
+                a, b = line.split(",", 1)
+                try:
+                    pts.append((float(a.strip()), float(b.strip())))
+                except ValueError:
+                    continue
+    return solution, pts
+
+
 async def section_task(
     client: httpx.AsyncClient, peer_id: int, text: str, attachments: list
 ) -> None:
@@ -635,6 +673,42 @@ async def section_task(
         return
     busy.add(peer_id)
     try:
+        photo = photo_url(attachments)
+        if photo:
+            await send_message(client, peer_id, "⏳ Решаю и дорисовываю сечение…")
+            r = await client.get(
+                photo, headers={"User-Agent": "Mozilla/5.0"}, timeout=60
+            )
+            if r.status_code != 200 or not r.content:
+                raise RuntimeError(f"фото не скачалось (HTTP {r.status_code})")
+            photo_bytes = r.content
+            b64 = prepare_image(photo_bytes)
+            instruction = (
+                "Реши задачу на сечение по этому фото. В конце добавь строку "
+                "'ЛИНИИ СЕЧЕНИЯ:' и после неё строки 'x,y' — координаты вершин сечения "
+                "НА ИЗОБРАЖЕНИИ в долях (0..1 от ширины и высоты, 0,0 — левый верхний угол). "
+                "Только числа через запятую, без текста."
+            )
+            content = [
+                {"type": "text", "text": instruction + "\n\n" + (text or "")},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                },
+            ]
+            push(peer_id, "user", content)
+            raw = await ask_llm(client, peer_id)
+            push(peer_id, "assistant", raw)
+            solution, lines = _parse_image_lines(raw)
+            await send_long(client, peer_id, solution.strip() or raw)
+            if len(lines) >= 2:
+                annotated = draw_on_image(photo_bytes, lines)
+                if annotated:
+                    await _upload_and_send(
+                        client, peer_id, annotated, "📐 Сечение на фото:"
+                    )
+            return
+
         instruction = (
             "Реши задачу на сечение пошагово. В конце добавь блок данных для 3D-рисунка "
             "строго в таком формате:\n"
@@ -654,32 +728,11 @@ async def section_task(
             "- РЁБРА — пары индексов вершин.\n"
             "- Реши задачу, вычисли точки, затем запиши блок. Без текста внутри блока."
         )
-        photo = photo_url(attachments)
-        if photo:
-            await send_message(client, peer_id, "⏳ Решаю и рисую сечение…")
-            r = await client.get(
-                photo, headers={"User-Agent": "Mozilla/5.0"}, timeout=60
-            )
-            if r.status_code != 200 or not r.content:
-                raise RuntimeError(f"фото не скачалось (HTTP {r.status_code})")
-            b64 = prepare_image(r.content)
-            content = [
-                {"type": "text", "text": instruction + "\n\n" + (text or "")},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                },
-            ]
-            push(peer_id, "user", content)
-        else:
-            await send_message(client, peer_id, "⏳ Решаю и рисую сечение…")
-            push(peer_id, "user", f"{instruction}\n\nУсловие: {text}")
-
+        await send_message(client, peer_id, "⏳ Решаю и рисую сечение…")
+        push(peer_id, "user", f"{instruction}\n\nУсловие: {text}")
         raw = await ask_llm(client, peer_id)
         push(peer_id, "assistant", raw)
-
         vertices, edges, section, solution = _parse_section_data(raw)
-
         await send_long(client, peer_id, solution.strip() or raw)
         if len(vertices) >= 3 and len(edges) >= 3 and len(section) >= 3:
             await draw_section_3d(client, peer_id, vertices, edges, section)
