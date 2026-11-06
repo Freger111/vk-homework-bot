@@ -627,19 +627,32 @@ async def draw_section_3d(
     return await _upload_and_send(client, peer_id, png, "📐 Сечение (3D):")
 
 
-def draw_on_image(data: bytes, pts: list) -> bytes | None:
-    """Рисует замкнутую ломаную по точкам (в долях 0..1) на фото."""
+def draw_on_image(
+    data: bytes, section: list, points: list, helpers: list
+) -> bytes | None:
+    """Рисует на фото: вспомогательные линии (синие), сечение (красное), точки с подписями."""
     try:
         from PIL import Image, ImageDraw
 
         img = Image.open(io.BytesIO(data)).convert("RGB")
         w, h = img.size
-        coords = [(p[0] * w, p[1] * h) for p in pts]
-        if len(coords) < 2:
-            return None
         draw = ImageDraw.Draw(img)
-        width = max(3, w // 250)
-        draw.line(coords + [coords[0]], fill=(255, 0, 0), width=width)
+        lw = max(3, w // 250)
+        for x1, y1, x2, y2 in helpers:
+            draw.line(
+                [(x1 * w, y1 * h), (x2 * w, y2 * h)],
+                fill=(30, 120, 255),
+                width=max(2, lw - 1),
+            )
+        if len(section) >= 2:
+            coords = [(x * w, y * h) for x, y in section]
+            draw.line(coords + [coords[0]], fill=(255, 0, 0), width=lw)
+        r = max(4, w // 150)
+        for name, x, y in points:
+            px, py = x * w, y * h
+            draw.ellipse([px - r, py - r, px + r, py + r], fill=(0, 160, 0))
+            if name:
+                draw.text((px + r + 2, py - r), name, fill=(0, 0, 0))
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return buf.getvalue()
@@ -650,19 +663,59 @@ def draw_on_image(data: bytes, pts: list) -> bytes | None:
 
 def _parse_image_lines(raw: str):
     solution = raw
-    pts = []
+    section, points, helpers = [], [], []
     marker = "ЛИНИИ СЕЧЕНИЯ"
     if marker in raw:
         solution, tail = raw.split(marker, 1)
+        groups = {"section": [], "points": [], "helpers": []}
+        cur = "section"
         for line in tail.splitlines():
-            line = line.replace(";", ",").strip()
-            if "," in line:
-                a, b = line.split(",", 1)
-                try:
-                    pts.append((float(a.strip()), float(b.strip())))
-                except ValueError:
+            s = line.strip()
+            if s.startswith("ТОЧКИ"):
+                cur = "points"
+                continue
+            if s.startswith("ВСПОМОГАТЕЛЬНЫЕ"):
+                cur = "helpers"
+                continue
+            if not s:
+                continue
+            groups[cur].append(s)
+
+        def parts_float(line):
+            out = []
+            for p in line.replace(";", ",").split(","):
+                p = p.strip()
+                if not p:
                     continue
-    return solution, pts
+                try:
+                    out.append(float(p))
+                except ValueError:
+                    out.append(None)
+            return out
+
+        for line in groups["section"]:
+            v = parts_float(line)
+            if len(v) >= 2 and v[0] is not None and v[1] is not None:
+                section.append((v[0], v[1]))
+        for line in groups["points"]:
+            parts = [p.strip() for p in line.replace(";", ",").split(",") if p.strip()]
+            name = ""
+            if len(parts) >= 3:
+                try:
+                    float(parts[0])
+                except ValueError:
+                    name = parts[0]
+                    parts = parts[1:]
+            if len(parts) >= 2:
+                try:
+                    points.append((name, float(parts[0]), float(parts[1])))
+                except ValueError:
+                    pass
+        for line in groups["helpers"]:
+            v = [x for x in parts_float(line) if x is not None]
+            if len(v) >= 4:
+                helpers.append((v[0], v[1], v[2], v[3]))
+    return solution, section, points, helpers
 
 
 async def section_task(
@@ -684,10 +737,20 @@ async def section_task(
             photo_bytes = r.content
             b64 = prepare_image(photo_bytes)
             instruction = (
-                "Реши задачу на сечение по этому фото. В конце добавь строку "
-                "'ЛИНИИ СЕЧЕНИЯ:' и после неё строки 'x,y' — координаты вершин сечения "
-                "НА ИЗОБРАЖЕНИИ в долях (0..1 от ширины и высоты, 0,0 — левый верхний угол). "
-                "Только числа через запятую, без текста."
+                "Реши задачу на сечение по этому фото. В конце добавь блоки:\n"
+                "ЛИНИИ СЕЧЕНИЯ:\n"
+                "x,y\n"
+                "x,y\n"
+                "ТОЧКИ:\n"
+                "Имя,x,y\n"
+                "Имя,x,y\n"
+                "ВСПОМОГАТЕЛЬНЫЕ:\n"
+                "x1,y1,x2,y2\n"
+                "x1,y1,x2,y2\n"
+                "Координаты — в долях от ширины/высоты фото (0..1, 0,0 — левый верхний угол). "
+                "ЛИНИИ СЕЧЕНИЯ — вершины сечения, ТОЧКИ — ключевые точки (данные и найденные) "
+                "с подписями, ВСПОМОГАТЕЛЬНЫЕ — линии, которыми находил неизвестные точки. "
+                "Только числа и подписи через запятую, без текста внутри блоков."
             )
             content = [
                 {"type": "text", "text": instruction + "\n\n" + (text or "")},
@@ -699,10 +762,10 @@ async def section_task(
             push(peer_id, "user", content)
             raw = await ask_llm(client, peer_id)
             push(peer_id, "assistant", raw)
-            solution, lines = _parse_image_lines(raw)
+            solution, section, points, helpers = _parse_image_lines(raw)
             await send_long(client, peer_id, solution.strip() or raw)
-            if len(lines) >= 2:
-                annotated = draw_on_image(photo_bytes, lines)
+            if len(section) >= 2 or points:
+                annotated = draw_on_image(photo_bytes, section, points, helpers)
                 if annotated:
                     await _upload_and_send(
                         client, peer_id, annotated, "📐 Сечение на фото:"
