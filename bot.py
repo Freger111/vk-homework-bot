@@ -724,6 +724,19 @@ def _parse_image_lines(raw: str):
     return solution, section, points, helpers
 
 
+def _parse_helpers(raw: str):
+    out = []
+    for line in raw.splitlines():
+        parts = [p.strip() for p in line.replace(";", ",").split(",") if p.strip()]
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError:
+            continue
+        if len(nums) >= 4:
+            out.append((nums[0], nums[1], nums[2], nums[3]))
+    return out
+
+
 async def section_task(
     client: httpx.AsyncClient, peer_id: int, text: str, attachments: list
 ) -> None:
@@ -743,7 +756,8 @@ async def section_task(
             photo_bytes = r.content
             b64 = prepare_image(photo_bytes)
             instruction = (
-                "Реши задачу на сечение по этому фото. В конце добавь блоки:\n"
+                "Реши задачу на сечение по этому фото. ОБЯЗАТЕЛЬНО в конце добавь "
+                "все три блока (даже если пусто — пиши заголовок):\n"
                 "ЛИНИИ СЕЧЕНИЯ:\n"
                 "x,y\n"
                 "x,y\n"
@@ -754,8 +768,8 @@ async def section_task(
                 "x1,y1,x2,y2\n"
                 "x1,y1,x2,y2\n"
                 "Координаты — в долях от ширины/высоты фото (0..1, 0,0 — левый верхний угол). "
-                "ЛИНИИ СЕЧЕНИЯ — вершины сечения, ТОЧКИ — ключевые точки (данные и найденные) "
-                "с подписями, ВСПОМОГАТЕЛЬНЫЕ — линии, которыми находил неизвестные точки. "
+                "ВСПОМОГАТЕЛЬНЫЕ — это линии, которыми ты находил неизвестные точки "
+                "(соединял известные точки, продлевал рёбра и т.п.), 2–6 штук. "
                 "Только числа и подписи через запятую, без текста внутри блоков."
             )
             content = [
@@ -770,6 +784,18 @@ async def section_task(
             push(peer_id, "assistant", raw)
             solution, section, points, helpers = _parse_image_lines(raw)
             await send_long(client, peer_id, solution.strip() or raw)
+            if not helpers:
+                push(
+                    peer_id,
+                    "user",
+                    "Теперь укажи ТОЛЬКО вспомогательные линии построения сечения "
+                    "(как находил неизвестные точки): строки 'x1,y1,x2,y2' в долях 0..1 "
+                    "от ширины/высоты фото, 2–6 линий, без текста.",
+                )
+                raw2 = await ask_llm(client, peer_id)
+                helpers = _parse_helpers(raw2)
+                if history.get(peer_id):
+                    history[peer_id].pop()
             if len(section) >= 2 or points:
                 annotated = draw_on_image(photo_bytes, section, points, helpers)
                 if annotated:
