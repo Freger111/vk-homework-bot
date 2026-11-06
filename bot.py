@@ -30,6 +30,8 @@ history: dict[int, list[dict]] = {}
 MAX_HISTORY = 6
 levels: dict[int, str] = {}
 awaiting_level: set[int] = set()
+awaiting_graph: set[int] = set()
+busy: set[int] = set()
 
 # Ссылка на чат с администратором (для кнопки «Помощь»)
 ADMIN_VK = settings.admin_vk.strip()
@@ -83,6 +85,21 @@ MAIN_KEYBOARD = {
     ],
 }
 
+BTN_OK = "✅ Понятно"
+BTN_SIMPLER = "🤔 Объясни проще"
+BTN_SIMILAR = "🔁 Похожая задача"
+
+FOLLOWUP_KEYBOARD = {
+    "one_time": False,
+    "buttons": [
+        [
+            {"action": {"type": "text", "label": BTN_OK}, "color": "positive"},
+            {"action": {"type": "text", "label": BTN_SIMPLER}, "color": "secondary"},
+        ],
+        [{"action": {"type": "text", "label": BTN_SIMILAR}, "color": "primary"}],
+    ],
+}
+
 
 def system_prompt_for(peer_id: int) -> str:
     base = settings.system_prompt
@@ -133,7 +150,11 @@ async def vk_call(
 
 
 async def send_message(
-    client: httpx.AsyncClient, peer_id: int, text: str, keyboard: dict | None = None
+    client: httpx.AsyncClient,
+    peer_id: int,
+    text: str,
+    keyboard: dict | None = None,
+    attachment: str | None = None,
 ) -> None:
     params = {
         "peer_id": peer_id,
@@ -142,6 +163,8 @@ async def send_message(
     }
     if keyboard is not None:
         params["keyboard"] = json.dumps(keyboard, ensure_ascii=False)
+    if attachment:
+        params["attachment"] = attachment
     await vk_call(client, "messages.send", post=True, **params)
 
 
@@ -159,11 +182,16 @@ def split_text(text: str, limit: int = MAX_VK_LEN) -> list[str]:
     return parts or [""]
 
 
-async def send_long(client: httpx.AsyncClient, peer_id: int, text: str) -> None:
+async def send_long(
+    client: httpx.AsyncClient, peer_id: int, text: str, keyboard: dict | None = None
+) -> None:
     """Отправляет длинное сообщение несколькими частями, чтобы не обрезалось."""
-    for part in split_text(text):
-        if part.strip():
-            await send_message(client, peer_id, part)
+    parts = [p for p in split_text(text) if p.strip()]
+    if not parts:
+        parts = [""]
+    for i, part in enumerate(parts):
+        kb = keyboard if i == len(parts) - 1 else None
+        await send_message(client, peer_id, part, keyboard=kb)
 
 
 def prepare_image(data: bytes) -> str:
@@ -347,6 +375,112 @@ def photo_url(attachments: list) -> str | None:
     return None
 
 
+async def upload_graph(
+    client: httpx.AsyncClient, peer_id: int, xs: list, ys: list, title: str
+) -> bool:
+    """Строит график matplotlib и отправляет его в чат."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=110)
+        ax.plot(xs, ys, color="#2b6cb0", linewidth=2)
+        ax.axhline(0, color="#888", linewidth=0.8)
+        ax.axvline(0, color="#888", linewidth=0.8)
+        ax.grid(True, alpha=0.3)
+        ax.set_title(title[:80])
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")
+        plt.close(fig)
+        png = buf.getvalue()
+    except Exception as e:
+        log.warning("График не построен: %s", e)
+        return False
+
+    try:
+        up = await vk_call(client, "photos.getMessagesUploadServer", peer_id=peer_id)
+        r = await client.post(
+            up["upload_url"], files={"photo": ("graph.png", png, "image/png")}
+        )
+        data = r.json()
+        saved = await vk_call(
+            client,
+            "photos.saveMessagesPhoto",
+            photo=data["photo"],
+            server=data["server"],
+            hash=data["hash"],
+        )
+        p = saved[0]
+        att = f"photo{p['owner_id']}_{p['id']}"
+        await send_message(
+            client,
+            peer_id,
+            "📊 Вот график:",
+            attachment=att,
+            keyboard=FOLLOWUP_KEYBOARD,
+        )
+        return True
+    except Exception as e:
+        log.warning("Загрузка графика не удалась: %s", e)
+        return False
+
+
+async def plot_task(client: httpx.AsyncClient, peer_id: int, expr: str) -> None:
+    """Просит LLM таблицу точек и строит по ней график."""
+    await send_message(client, peer_id, "⏳ Строю график…")
+    prompt = (
+        f"Функция/задача: {expr}\n\n"
+        "Верни ТОЛЬКО таблицу точек для графика: 40 строк вида 'x,y' "
+        "(x от -10 до 10), без текста и пояснений."
+    )
+    push(peer_id, "user", prompt)
+    raw = await ask_llm(client, peer_id)
+    push(peer_id, "assistant", raw)
+    pts = []
+    for line in raw.splitlines():
+        line = line.replace(";", ",").strip()
+        if "," in line:
+            a, b = line.split(",", 1)
+            try:
+                pts.append((float(a.strip()), float(b.strip())))
+            except ValueError:
+                continue
+    if len(pts) < 3:
+        await send_message(
+            client,
+            peer_id,
+            "Не понял функцию. Напишите точнее, например: y = x^2 - 4x + 3",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    if not await upload_graph(client, peer_id, xs, ys, expr):
+        await send_message(
+            client, peer_id, "Не удалось отправить картинку графика.", keyboard=MAIN_KEYBOARD
+        )
+
+
+async def run_llm_task(
+    client: httpx.AsyncClient, peer_id: int, prompt: str, keyboard: dict | None
+) -> None:
+    """Решает задачу с анти-спамом: один запрос за раз."""
+    if peer_id in busy:
+        await send_message(client, peer_id, "⏳ Секунду, я ещё решаю предыдущую задачу…")
+        return
+    busy.add(peer_id)
+    try:
+        await send_message(client, peer_id, "⏳ Решаю задачу…")
+        push(peer_id, "user", prompt)
+        reply = await ask_llm(client, peer_id)
+        push(peer_id, "assistant", reply)
+        await send_long(client, peer_id, reply, keyboard=keyboard)
+    finally:
+        busy.discard(peer_id)
+
+
 async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
     if update.get("type") != "message_new":
         return
@@ -396,10 +530,11 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         )
         return
     if low in (BTN_GRAPH.lower(), "график"):
+        awaiting_graph.add(peer_id)
         await send_message(
             client,
             peer_id,
-            "Пришлите фото или текст задачи с графиком — разберу и объясню.",
+            "Пришлите функцию, например «y = x^2 - 4x + 3», — построю график картинкой.",
             keyboard=MAIN_KEYBOARD,
         )
         return
@@ -422,9 +557,41 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             keyboard=MAIN_KEYBOARD,
         )
         return
+    if low in (BTN_OK.lower(), "понятно", "спасибо"):
+        await send_message(
+            client,
+            peer_id,
+            "Рад, что помогло! Присылайте следующую задачу.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in (BTN_SIMPLER.lower(), "проще", "объясни проще"):
+        await run_llm_task(
+            client,
+            peer_id,
+            "Объясни это решение проще, как для новичка, но с теми же выкладками.",
+            FOLLOWUP_KEYBOARD,
+        )
+        return
+    if low in (BTN_SIMILAR.lower(), "похожая", "ещё"):
+        await run_llm_task(
+            client,
+            peer_id,
+            "Придумай и реши похожую задачу для тренировки (с другим условием).",
+            FOLLOWUP_KEYBOARD,
+        )
+        return
+    if peer_id in awaiting_graph and text:
+        awaiting_graph.discard(peer_id)
+        await plot_task(client, peer_id, text)
+        return
 
     photo = photo_url(attachments)
     if photo:
+        if peer_id in busy:
+            await send_message(client, peer_id, "⏳ Секунду, я ещё решаю предыдущую задачу…")
+            return
+        busy.add(peer_id)
         try:
             await send_message(client, peer_id, "⏳ Решаю задачу с фото…")
             r = await client.get(
@@ -453,7 +620,7 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             push(peer_id, "user", content)
             reply = await ask_llm(client, peer_id)
             push(peer_id, "assistant", reply)
-            await send_long(client, peer_id, reply)
+            await send_long(client, peer_id, reply, keyboard=FOLLOWUP_KEYBOARD)
         except Exception as e:
             log.exception("Ошибка обработки фото")
             await send_message(
@@ -462,6 +629,8 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
                 f"Не удалось разобрать фото ({type(e).__name__}): {e}\n"
                 "Попробуйте прислать фото ещё раз или напишите задачу текстом.",
             )
+        finally:
+            busy.discard(peer_id)
         return
 
     if any(a.get("type") == "photo" for a in attachments):
@@ -473,11 +642,7 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         return
 
     if text:
-        await send_message(client, peer_id, "⏳ Решаю задачу…")
-        push(peer_id, "user", text)
-        reply = await ask_llm(client, peer_id)
-        push(peer_id, "assistant", reply)
-        await send_long(client, peer_id, reply)
+        await run_llm_task(client, peer_id, text, FOLLOWUP_KEYBOARD)
 
 
 async def init_longpoll(client: httpx.AsyncClient) -> tuple[str, str, str]:
