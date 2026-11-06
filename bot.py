@@ -783,6 +783,12 @@ async def section_task(
             raw = await ask_llm(client, peer_id)
             push(peer_id, "assistant", raw)
             solution, section, points, helpers = _parse_image_lines(raw)
+            log.info(
+                "Сечение: section=%d points=%d helpers=%d",
+                len(section),
+                len(points),
+                len(helpers),
+            )
             await send_long(client, peer_id, solution.strip() or raw)
             if not helpers:
                 push(
@@ -794,6 +800,7 @@ async def section_task(
                 )
                 raw2 = await ask_llm(client, peer_id)
                 helpers = _parse_helpers(raw2)
+                log.info("Сечение: fallback helpers=%d", len(helpers))
                 if history.get(peer_id):
                     history[peer_id].pop()
             if len(section) >= 2 or points:
