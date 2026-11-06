@@ -411,32 +411,7 @@ async def upload_graph(
         log.warning("График не построен: %s", e)
         return False
 
-    try:
-        up = await vk_call(client, "photos.getMessagesUploadServer", peer_id=peer_id)
-        r = await client.post(
-            up["upload_url"], files={"photo": ("graph.png", png, "image/png")}
-        )
-        data = r.json()
-        saved = await vk_call(
-            client,
-            "photos.saveMessagesPhoto",
-            photo=data["photo"],
-            server=data["server"],
-            hash=data["hash"],
-        )
-        p = saved[0]
-        att = f"photo{p['owner_id']}_{p['id']}"
-        await send_message(
-            client,
-            peer_id,
-            "📊 Вот график:",
-            attachment=att,
-            keyboard=FOLLOWUP_KEYBOARD,
-        )
-        return True
-    except Exception as e:
-        log.warning("Загрузка графика не удалась: %s", e)
-        return False
+    return await _upload_and_send(client, peer_id, png, "📊 Вот график:")
 
 
 async def plot_task(client: httpx.AsyncClient, peer_id: int, expr: str) -> None:
@@ -502,9 +477,13 @@ async def _upload_and_send(
             up["upload_url"], files={"photo": ("img.png", png, "image/png")}
         )
         data = r.json()
+        if not data.get("photo"):
+            log.warning("Загрузка фото вернула без photo: %s", str(data)[:200])
+            return False
         saved = await vk_call(
             client,
             "photos.saveMessagesPhoto",
+            post=True,
             photo=data["photo"],
             server=data["server"],
             hash=data["hash"],
