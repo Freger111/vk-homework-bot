@@ -127,10 +127,24 @@ async def vk_call(
     params.setdefault("access_token", settings.vk_token)
     params.setdefault("v", API_VERSION)
     url = f"{VK_API}/{method}"
-    if post:
-        r = await client.post(url, data=params)
-    else:
-        r = await client.get(url, params=params)
+    r = None
+    for attempt in range(3):
+        try:
+            if post:
+                r = await client.post(url, data=params)
+            else:
+                r = await client.get(url, params=params)
+            break
+        except (
+            httpx.ConnectTimeout,
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+        ):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(1 + attempt)
     try:
         data = r.json()
     except Exception:
