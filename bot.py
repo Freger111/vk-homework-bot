@@ -63,7 +63,6 @@ BTN_RESET = "🧹 Сбросить"
 HELP_BUTTON = (
     {
         "action": {"type": "open_link", "label": BTN_HELP, "link": admin_chat_url()},
-        "color": "secondary",
     }
     if ADMIN_VK
     else {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"}
