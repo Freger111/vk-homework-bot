@@ -38,6 +38,7 @@ busy: set[int] = set()
 subject: dict[int, str] = {}
 mode: dict[int, str] = {}
 quiz: dict[int, dict] = {}
+socratic: set[int] = set()
 
 # Ссылка на чат с администратором (для кнопки «Помощь»)
 ADMIN_VK = settings.admin_vk.strip()
@@ -181,6 +182,18 @@ BTN_REMIND = "⏰ Напоминания"
 BTN_CHECK = "🔍 Проверить решение"
 BTN_MISTAKES = "📝 Работа над ошибками"
 BTN_REF = "👥 Пригласить друга"
+BTN_SOCRATIC = "🧑‍🏫 Наставник"
+
+SOCRATIC_PROMPT = (
+    "Ты — терпеливый наставник. НЕ давай готовое решение. "
+    "Веди ученика к ответу наводящими вопросами и маленькими подсказками.\n"
+    "Правила:\n"
+    "- За один ответ задавай ОДИН вопрос или давай ОДНУ подсказку.\n"
+    "- Не пиши готовый ответ, пока ученик сам не придёт к нему.\n"
+    "- Если ученик ошибается — мягко укажи на противоречие и задай наводящий вопрос.\n"
+    "- Хвали за верные шаги.\n"
+    "- Полный ответ показывай только если ученик прямо попросит «покажи ответ».\n"
+)
 
 
 def _btn(label: str, color: str = "secondary") -> dict:
@@ -192,9 +205,14 @@ MAIN_KEYBOARD = {
     "buttons": [
         [_btn(SUBJECTS[0][0]), _btn(SUBJECTS[1][0]), _btn(SUBJECTS[2][0])],
         [_btn(SUBJECTS[3][0]), _btn(SUBJECTS[4][0]), _btn(BTN_MORE)],
-        [_btn(BTN_SOLVE, "positive"), _btn(BTN_TEST, "primary"), _btn(BTN_EXPLAIN)],
-        [_btn(BTN_GENERATE), _btn(BTN_PROJECT), _btn(BTN_EXAMPLES)],
-        [_btn(BTN_SPELL), _btn(BTN_TIPS), _btn(BTN_REMIND)],
+        [
+            _btn(BTN_SOLVE, "positive"),
+            _btn(BTN_SOCRATIC, "positive"),
+            _btn(BTN_TEST, "primary"),
+        ],
+        [_btn(BTN_EXPLAIN), _btn(BTN_GENERATE), _btn(BTN_PROJECT)],
+        [_btn(BTN_EXAMPLES), _btn(BTN_SPELL), _btn(BTN_TIPS)],
+        [_btn(BTN_REMIND)],
     ],
 }
 
@@ -238,7 +256,7 @@ FOLLOWUP_KEYBOARD = {
 
 
 def system_prompt_for(peer_id: int) -> str:
-    base = settings.system_prompt
+    base = SOCRATIC_PROMPT if peer_id in socratic else settings.system_prompt
     parts = []
     s = subject.get(peer_id)
     if s:
@@ -1477,6 +1495,24 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             keyboard=MAIN_KEYBOARD,
         )
         return
+    if low == BTN_SOCRATIC.lower():
+        socratic.add(peer_id)
+        history.pop(peer_id, None)
+        await send_message(
+            client,
+            peer_id,
+            "🧑‍🏫 Режим наставника включён: я поведу тебя вопросами, а не дам готовый ответ.\n"
+            "Пришли задачу. Напиши «стоп», чтобы выйти.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low in ("стоп", "stop", "выйти"):
+        socratic.discard(peer_id)
+        history.pop(peer_id, None)
+        await send_message(
+            client, peer_id, "Режим наставника выключен.", keyboard=MAIN_KEYBOARD
+        )
+        return
 
     # Ожидание ввода для инструментов
     if mode.get(peer_id) in ("explain", "generate", "project", "examples", "spell") and text:
@@ -1723,7 +1759,13 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         return
 
     if text:
-        await run_llm_task(client, peer_id, text, FOLLOWUP_KEYBOARD)
+        await run_llm_task(
+            client,
+            peer_id,
+            text,
+            FOLLOWUP_KEYBOARD,
+            ack="⏳ Думаю, как подсказать…" if peer_id in socratic else "⏳ Решаю задачу…",
+        )
 
 
 async def init_longpoll(client: httpx.AsyncClient) -> tuple[str, str, str]:
