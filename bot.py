@@ -198,6 +198,7 @@ MAIN_KEYBOARD = {
 MORE_KEYBOARD = {
     "one_time": False,
     "buttons": [
+        [_btn(BTN_SECTION), _btn(BTN_GRAPH)],
         [_btn(BTN_HISTORY), _btn(BTN_LEVEL)],
         [_btn(BTN_HELP), _btn(BTN_RESET)],
         [_btn(BTN_BACK)],
