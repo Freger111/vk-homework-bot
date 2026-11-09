@@ -35,6 +35,9 @@ awaiting_level: set[int] = set()
 awaiting_graph: set[int] = set()
 awaiting_section: set[int] = set()
 busy: set[int] = set()
+subject: dict[int, str] = {}
+mode: dict[int, str] = {}
+quiz: dict[int, dict] = {}
 
 # Ссылка на чат с администратором (для кнопки «Помощь»)
 ADMIN_VK = settings.admin_vk.strip()
@@ -134,11 +137,14 @@ MAX_VK_LEN = 4000
 
 HELP_TEXT = (
     "Привет! Я решаю домашнее задание 📚\n\n"
-    "• Напиши задачу текстом — решу пошагово с объяснением.\n"
-    "• Пришли фото задачи — разберу.\n"
-    "• «📚 Мои задачи» — история решённых.\n\n"
-    f"Бесплатно: {FREE_LIMIT} задач в день.\n\n"
-    "Кнопки внизу: фото, сечение, график, уровень, помощь, мои задачи, сброс."
+    "• Выбери предмет: математика, русский, физика, химия, биология, география.\n"
+    "• «🧠 Решить задачу» — пришли задачу текстом или фото, решу пошагово.\n"
+    "• «📝 Тест» — мини-тест с мгновенной проверкой.\n"
+    "• «📚 Объясни тему» — разбор темы с примерами.\n"
+    "• «🎲 Генератор заданий» — тренировочная задача.\n"
+    "• «🧩 Помощь с проектом», «📄 Примеры», «✍️ Орфография», «💡 Советы», «⏰ Напоминания».\n\n"
+    f"Бесплатно: {FREE_LIMIT} задач в день.\n"
+    "«⚙️ Ещё» — история, уровень, помощь, сброс."
 )
 
 BTN_PHOTO = "📷 Прислать фото"
@@ -151,21 +157,61 @@ BTN_HISTORY = "📚 Мои задачи"
 
 HELP_BUTTON = {"action": {"type": "text", "label": BTN_HELP}, "color": "secondary"}
 
+BTN_MORE = "⚙️ Ещё"
+BTN_BACK = "⬅️ Меню"
+
+SUBJECTS = [
+    ("📐 Математика", "математика"),
+    ("📖 Русский язык", "русский язык"),
+    ("⚛️ Физика", "физика"),
+    ("🧪 Химия", "химия"),
+    ("🧬 Биология", "биология"),
+    ("🌍 География", "география"),
+]
+
+BTN_SOLVE = "🧠 Решить задачу"
+BTN_TEST = "📝 Тест"
+BTN_EXPLAIN = "📚 Объясни тему"
+BTN_GENERATE = "🎲 Генератор заданий"
+BTN_PROJECT = "🧩 Помощь с проектом"
+BTN_EXAMPLES = "📄 Показать примеры"
+BTN_SPELL = "✍️ Проверка орфографии"
+BTN_TIPS = "💡 Советы по учёбе"
+BTN_REMIND = "⏰ Напоминания"
+
+
+def _btn(label: str, color: str = "secondary") -> dict:
+    return {"action": {"type": "text", "label": label}, "color": color}
+
+
 MAIN_KEYBOARD = {
     "one_time": False,
     "buttons": [
-        [{"action": {"type": "text", "label": BTN_PHOTO}, "color": "primary"}],
+        [_btn(SUBJECTS[0][0]), _btn(SUBJECTS[1][0]), _btn(SUBJECTS[2][0])],
+        [_btn(SUBJECTS[3][0]), _btn(SUBJECTS[4][0]), _btn(BTN_MORE)],
+        [_btn(BTN_SOLVE, "positive"), _btn(BTN_TEST, "primary"), _btn(BTN_EXPLAIN)],
+        [_btn(BTN_GENERATE), _btn(BTN_PROJECT), _btn(BTN_EXAMPLES)],
+        [_btn(BTN_SPELL), _btn(BTN_TIPS), _btn(BTN_REMIND)],
+    ],
+}
+
+MORE_KEYBOARD = {
+    "one_time": False,
+    "buttons": [
+        [_btn(BTN_HISTORY), _btn(BTN_LEVEL)],
+        [_btn(BTN_HELP), _btn(BTN_RESET)],
+        [_btn(BTN_BACK)],
+    ],
+}
+
+QUIZ_KEYBOARD = {
+    "one_time": False,
+    "buttons": [
         [
-            {"action": {"type": "text", "label": BTN_SECTION}, "color": "secondary"},
-            {"action": {"type": "text", "label": BTN_GRAPH}, "color": "secondary"},
-        ],
-        [
-            {"action": {"type": "text", "label": BTN_LEVEL}, "color": "secondary"},
-            HELP_BUTTON,
-        ],
-        [
-            {"action": {"type": "text", "label": BTN_HISTORY}, "color": "secondary"},
-            {"action": {"type": "text", "label": BTN_RESET}, "color": "secondary"},
+            _btn("1", "primary"),
+            _btn("2", "primary"),
+            _btn("3", "primary"),
+            _btn("4", "primary"),
         ],
     ],
 }
@@ -188,9 +234,15 @@ FOLLOWUP_KEYBOARD = {
 
 def system_prompt_for(peer_id: int) -> str:
     base = settings.system_prompt
+    parts = []
+    s = subject.get(peer_id)
+    if s:
+        parts.append(f"Предмет: {s}.")
     lvl = levels.get(peer_id)
     if lvl:
-        return base + f"\n\nУровень ученика: {lvl}. Подстраивай объяснение под этот уровень."
+        parts.append(f"Уровень ученика: {lvl}. Подстраивай объяснение под этот уровень.")
+    if parts:
+        return base + "\n\n" + "\n".join(parts)
     return base
 
 
@@ -1088,6 +1140,119 @@ async def admin_command(client: httpx.AsyncClient, peer_id: int, text: str) -> b
     return False
 
 
+async def start_quiz(client: httpx.AsyncClient, peer_id: int) -> None:
+    subj = subject.get(peer_id, "общие знания")
+    await send_message(client, peer_id, "⏳ Готовлю тест…")
+    push(
+        peer_id,
+        "user",
+        f"Составь 5 тестовых вопросов по предмету «{subj}» с 4 вариантами ответа "
+        "и укажи правильный. Формат строго: ВОПРОС|A|B|C|D|N, где N — номер "
+        "правильного ответа (1-4). По одной строке на вопрос, без текста вокруг.",
+    )
+    raw = await ask_llm(client, peer_id)
+    questions = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if s.count("|") >= 5:
+            parts = [p.strip() for p in s.split("|")]
+            if len(parts) >= 6:
+                questions.append({"q": parts[0], "opts": parts[1:5], "ans": parts[5]})
+    if not questions:
+        await send_message(
+            client,
+            peer_id,
+            "Не удалось составить тест. Попробуйте ещё раз.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    quiz[peer_id] = {"questions": questions[:5], "idx": 0, "score": 0}
+    await send_quiz_question(client, peer_id)
+
+
+async def send_quiz_question(client: httpx.AsyncClient, peer_id: int) -> None:
+    q = quiz.get(peer_id)
+    if not q:
+        return
+    if q["idx"] >= len(q["questions"]):
+        score, total = q["score"], len(q["questions"])
+        quiz.pop(peer_id, None)
+        await send_message(
+            client,
+            peer_id,
+            f"🏁 Тест завершён! Правильно: {score} из {total}.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    item = q["questions"][q["idx"]]
+    body = f"Вопрос {q['idx'] + 1}/{len(q['questions'])}\n{item['q']}\n\n"
+    body += "\n".join(f"{i + 1}. {o}" for i, o in enumerate(item["opts"]))
+    body += "\n\nОтветьте номером (1-4)."
+    await send_message(client, peer_id, body, keyboard=QUIZ_KEYBOARD)
+
+
+async def quiz_answer(client: httpx.AsyncClient, peer_id: int, answer: str) -> None:
+    q = quiz.get(peer_id)
+    if not q:
+        return
+    item = q["questions"][q["idx"]]
+    correct = str(item["ans"]).strip() == answer
+    if correct:
+        q["score"] += 1
+    q["idx"] += 1
+    if correct:
+        await send_message(client, peer_id, "✅ Верно!")
+    else:
+        try:
+            right = item["opts"][int(item["ans"]) - 1]
+        except Exception:
+            right = item["ans"]
+        await send_message(
+            client, peer_id, f"❌ Неверно. Правильный ответ: {item['ans']}) {right}"
+        )
+    await send_quiz_question(client, peer_id)
+
+
+def add_reminder(peer_id: int, text: str) -> bool:
+    m = re.search(r"(\d{1,2})\.(\d{1,2})\s+(\d{1,2}):(\d{2})\s+(.+)", text)
+    if not m:
+        return False
+    day, month, hour, minute, body = m.groups()
+    year = time.localtime().tm_year
+    try:
+        ts = time.mktime(
+            (year, int(month), int(day), int(hour), int(minute), 0, 0, 0, -1)
+        )
+    except Exception:
+        return False
+    if ts < time.time():
+        ts = time.mktime(
+            (year + 1, int(month), int(day), int(hour), int(minute), 0, 0, 0, -1)
+        )
+    u = user(peer_id)
+    u.setdefault("reminders", []).append(
+        {"ts": int(ts), "text": body.strip(), "sent": False}
+    )
+    save_data()
+    return True
+
+
+async def check_reminders(client: httpx.AsyncClient) -> None:
+    now = time.time()
+    changed = False
+    for uid, u in list(_data.items()):
+        for r in u.get("reminders", []):
+            if not r.get("sent") and r.get("ts", 0) <= now:
+                try:
+                    await send_message(client, int(uid), f"⏰ Напоминание: {r['text']}")
+                    r["sent"] = True
+                    changed = True
+                except Exception:
+                    pass
+    if changed:
+        save_data()
+
+
 async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
     if update.get("type") != "message_new":
         return
@@ -1112,6 +1277,138 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         return
 
     low = text.lower()
+
+    # Тест: ответы 1-4
+    if peer_id in quiz and text in ("1", "2", "3", "4"):
+        await quiz_answer(client, peer_id, text)
+        return
+
+    # Выбор предмета
+    for label, subj in SUBJECTS:
+        if low == label.lower():
+            subject[peer_id] = subj
+            mode.pop(peer_id, None)
+            history.pop(peer_id, None)
+            await send_message(
+                client,
+                peer_id,
+                f"Предмет: {subj}. Пришлите задачу или выберите действие.",
+                keyboard=MAIN_KEYBOARD,
+            )
+            return
+
+    if low == BTN_MORE.lower():
+        await send_message(client, peer_id, "Дополнительно:", keyboard=MORE_KEYBOARD)
+        return
+    if low == BTN_BACK.lower():
+        mode.pop(peer_id, None)
+        await send_message(client, peer_id, "Главное меню.", keyboard=MAIN_KEYBOARD)
+        return
+    if low == BTN_SOLVE.lower():
+        mode[peer_id] = "solve"
+        await send_message(
+            client,
+            peer_id,
+            f"Пришлите задачу по предмету «{subject.get(peer_id, 'любой')}» текстом или фото.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_TEST.lower():
+        await start_quiz(client, peer_id)
+        return
+    if low == BTN_EXPLAIN.lower():
+        mode[peer_id] = "explain"
+        await send_message(
+            client,
+            peer_id,
+            "Какую тему объяснить? Напишите название.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_GENERATE.lower():
+        mode[peer_id] = "generate"
+        await send_message(
+            client,
+            peer_id,
+            "По какой теме сгенерировать задание?",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_PROJECT.lower():
+        mode[peer_id] = "project"
+        await send_message(
+            client,
+            peer_id,
+            "Опишите проект: тема, что уже сделано, что нужно. Предложу структуру и идеи.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_EXAMPLES.lower():
+        mode[peer_id] = "examples"
+        await send_message(
+            client,
+            peer_id,
+            "По какой теме показать примеры решения?",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_SPELL.lower():
+        mode[peer_id] = "spell"
+        await send_message(
+            client,
+            peer_id,
+            "Пришлите текст — проверю орфографию и пунктуацию.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_TIPS.lower():
+        await run_llm_task(
+            client,
+            peer_id,
+            "Дай 7 практичных советов по учёбе и выполнению домашних заданий. Кратко, по делу.",
+            MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_REMIND.lower():
+        mode[peer_id] = "remind"
+        await send_message(
+            client,
+            peer_id,
+            "Напишите напоминание в формате: ДД.ММ ЧЧ:ММ текст.\n"
+            "Например: 15.11 18:00 контрольная по физике",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+
+    # Ожидание ввода для инструментов
+    if mode.get(peer_id) in ("explain", "generate", "project", "examples", "spell") and text:
+        m = mode.pop(peer_id)
+        subj = subject.get(peer_id, "")
+        prefix = f"Предмет: {subj}. " if subj else ""
+        prompts = {
+            "explain": f"Объясни тему «{text}»: суть, ключевые правила/формулы, 1–2 примера.",
+            "generate": f"Придумай одно задание по теме «{text}» и реши его пошагово.",
+            "project": f"Помоги структурировать проект. Описание: {text}. Дай план и идеи.",
+            "examples": f"Покажи 2 примера решённых задач по теме «{text}» пошагово.",
+            "spell": f"Проверь орфографию и пунктуацию, перечисли ошибки и дай исправленный текст:\n\n{text}",
+        }
+        await run_llm_task(client, peer_id, prefix + prompts[m], MAIN_KEYBOARD)
+        return
+    if mode.get(peer_id) == "remind" and text:
+        mode.pop(peer_id, None)
+        if add_reminder(peer_id, text):
+            await send_message(
+                client, peer_id, "⏰ Напоминание сохранено.", keyboard=MAIN_KEYBOARD
+            )
+        else:
+            await send_message(
+                client,
+                peer_id,
+                "Не понял дату. Формат: ДД.ММ ЧЧ:ММ текст (например: 15.11 18:00 контрольная).",
+                keyboard=MAIN_KEYBOARD,
+            )
+        return
+
     if low in ("начать", "start", "помощь", "help", "привет", "/start", BTN_HELP.lower()):
         text_out = HELP_TEXT
         if ADMIN_VK:
@@ -1335,6 +1632,7 @@ async def main() -> None:
                 ts = data.get("ts", ts)
                 for u in data.get("updates", []):
                     await handle_update(client, u)
+                await check_reminders(client)
             except Exception as e:
                 log.exception("Ошибка long poll: %s", e)
                 await asyncio.sleep(3)
