@@ -165,11 +165,18 @@ BTN_BACK = "⬅️ Меню"
 
 SUBJECTS = [
     ("📐 Математика", "математика"),
+    ("📊 Алгебра", "алгебра"),
+    ("📏 Геометрия", "геометрия"),
     ("📖 Русский язык", "русский язык"),
+    ("📚 Литература", "литература"),
     ("⚛️ Физика", "физика"),
     ("🧪 Химия", "химия"),
     ("🧬 Биология", "биология"),
     ("🌍 География", "география"),
+    ("🕰 История", "история"),
+    ("🏛 Обществознание", "обществознание"),
+    ("💻 Информатика", "информатика"),
+    ("🇬🇧 Английский", "английский язык"),
 ]
 
 BTN_SOLVE = "🧠 Решить задачу"
@@ -219,31 +226,59 @@ def _btn(label: str, color: str = "secondary") -> dict:
     return {"action": {"type": "text", "label": label}, "color": color}
 
 
+BTN_SUBJECTS = "📚 Предметы"
+BTN_TOOLS = "🧰 Инструменты"
+BTN_STYLE = "🎨 Стиль"
+
+
+def _grid(items, per_row: int = 3):
+    rows = []
+    for i in range(0, len(items), per_row):
+        rows.append([_btn(lbl) for lbl, _ in items[i:i + per_row]])
+    return rows
+
+
 MAIN_KEYBOARD = {
     "one_time": False,
     "buttons": [
-        [_btn(SUBJECTS[0][0]), _btn(SUBJECTS[1][0]), _btn(SUBJECTS[2][0])],
-        [_btn(SUBJECTS[3][0]), _btn(SUBJECTS[4][0]), _btn(BTN_MORE)],
-        [
-            _btn(BTN_SOLVE, "positive"),
-            _btn(BTN_SOCRATIC, "positive"),
-            _btn(BTN_TEST, "primary"),
-        ],
-        [_btn(BTN_EXPLAIN), _btn(BTN_GENERATE), _btn(BTN_PROJECT)],
-        [_btn(BTN_EXAMPLES), _btn(BTN_SPELL), _btn(BTN_TIPS)],
-        [_btn(BTN_REMIND)],
+        [_btn(BTN_SUBJECTS, "primary"), _btn(BTN_TOOLS, "primary")],
+        [_btn(BTN_STYLE), _btn(BTN_MORE)],
+    ],
+}
+
+SUBJECTS_KEYBOARD = {
+    "one_time": False,
+    "buttons": _grid(SUBJECTS) + [[_btn(BTN_BACK)]],
+}
+
+TOOLS_KEYBOARD = {
+    "one_time": False,
+    "buttons": [
+        [_btn(BTN_SOLVE, "positive"), _btn(BTN_SOCRATIC, "positive")],
+        [_btn(BTN_TEST, "primary"), _btn(BTN_EXPLAIN)],
+        [_btn(BTN_GENERATE), _btn(BTN_PROJECT)],
+        [_btn(BTN_EXAMPLES), _btn(BTN_SPELL)],
+        [_btn(BTN_TIPS), _btn(BTN_REMIND)],
+        [_btn(BTN_BACK)],
+    ],
+}
+
+STYLE_KEYBOARD = {
+    "one_time": False,
+    "buttons": [
+        [_btn(BTN_PERSONA, "primary"), _btn(BTN_ROAST, "negative")],
+        [_btn(BTN_CHECK, "positive"), _btn(BTN_MISTAKES, "primary")],
+        [_btn(BTN_REF), _btn(BTN_BACK)],
     ],
 }
 
 MORE_KEYBOARD = {
     "one_time": False,
     "buttons": [
-        [_btn(BTN_PERSONA, "primary"), _btn(BTN_ROAST, "negative")],
-        [_btn(BTN_CHECK, "positive"), _btn(BTN_MISTAKES, "primary")],
         [_btn(BTN_SECTION), _btn(BTN_GRAPH)],
         [_btn(BTN_HISTORY), _btn(BTN_LEVEL)],
-        [_btn(BTN_REF), _btn(BTN_HELP)],
-        [_btn(BTN_RESET), _btn(BTN_BACK)],
+        [_btn(BTN_HELP), _btn(BTN_RESET)],
+        [_btn(BTN_BACK)],
     ],
 }
 
@@ -1404,8 +1439,19 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             )
             return
 
+    if low == BTN_SUBJECTS.lower():
+        await send_message(
+            client, peer_id, "📚 Выбери предмет:", keyboard=SUBJECTS_KEYBOARD
+        )
+        return
+    if low == BTN_TOOLS.lower():
+        await send_message(client, peer_id, "🧰 Инструменты:", keyboard=TOOLS_KEYBOARD)
+        return
+    if low == BTN_STYLE.lower():
+        await send_message(client, peer_id, "🎨 Стиль:", keyboard=STYLE_KEYBOARD)
+        return
     if low == BTN_MORE.lower():
-        await send_message(client, peer_id, "Дополнительно:", keyboard=MORE_KEYBOARD)
+        await send_message(client, peer_id, "⚙️ Ещё:", keyboard=MORE_KEYBOARD)
         return
     if low == BTN_BACK.lower():
         mode.pop(peer_id, None)
