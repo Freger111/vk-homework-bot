@@ -651,7 +651,11 @@ async def plot_task(client: httpx.AsyncClient, peer_id: int, expr: str) -> None:
 
 
 async def run_llm_task(
-    client: httpx.AsyncClient, peer_id: int, prompt: str, keyboard: dict | None
+    client: httpx.AsyncClient,
+    peer_id: int,
+    prompt: str,
+    keyboard: dict | None,
+    ack: str = "⏳ Решаю задачу…",
 ) -> None:
     """Решает задачу с анти-спамом: один запрос за раз."""
     if peer_id in busy:
@@ -659,7 +663,7 @@ async def run_llm_task(
         return
     busy.add(peer_id)
     try:
-        await send_message(client, peer_id, "⏳ Решаю задачу…")
+        await send_message(client, peer_id, ack)
         push(peer_id, "user", prompt)
         reply = await ask_llm(client, peer_id)
         push(peer_id, "assistant", reply)
@@ -1368,6 +1372,7 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             peer_id,
             "Дай 7 практичных советов по учёбе и выполнению домашних заданий. Кратко, по делу.",
             MAIN_KEYBOARD,
+            ack="⏳ Секунду, готовлю советы…",
         )
         return
     if low == BTN_REMIND.lower():
@@ -1393,7 +1398,9 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             "examples": f"Покажи 2 примера решённых задач по теме «{text}» пошагово.",
             "spell": f"Проверь орфографию и пунктуацию, перечисли ошибки и дай исправленный текст:\n\n{text}",
         }
-        await run_llm_task(client, peer_id, prefix + prompts[m], MAIN_KEYBOARD)
+        await run_llm_task(
+            client, peer_id, prefix + prompts[m], MAIN_KEYBOARD, ack="⏳ Секунду…"
+        )
         return
     if mode.get(peer_id) == "remind" and text:
         mode.pop(peer_id, None)
