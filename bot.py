@@ -178,6 +178,9 @@ BTN_EXAMPLES = "📄 Показать примеры"
 BTN_SPELL = "✍️ Проверка орфографии"
 BTN_TIPS = "💡 Советы по учёбе"
 BTN_REMIND = "⏰ Напоминания"
+BTN_CHECK = "🔍 Проверить решение"
+BTN_MISTAKES = "📝 Работа над ошибками"
+BTN_REF = "👥 Пригласить друга"
 
 
 def _btn(label: str, color: str = "secondary") -> dict:
@@ -198,10 +201,11 @@ MAIN_KEYBOARD = {
 MORE_KEYBOARD = {
     "one_time": False,
     "buttons": [
+        [_btn(BTN_CHECK, "positive"), _btn(BTN_MISTAKES, "primary")],
         [_btn(BTN_SECTION), _btn(BTN_GRAPH)],
         [_btn(BTN_HISTORY), _btn(BTN_LEVEL)],
-        [_btn(BTN_HELP), _btn(BTN_RESET)],
-        [_btn(BTN_BACK)],
+        [_btn(BTN_REF), _btn(BTN_HELP)],
+        [_btn(BTN_RESET), _btn(BTN_BACK)],
     ],
 }
 
@@ -1212,6 +1216,12 @@ async def quiz_answer(client: httpx.AsyncClient, peer_id: int, answer: str) -> N
             right = item["opts"][int(item["ans"]) - 1]
         except Exception:
             right = item["ans"]
+        u = user(peer_id)
+        u.setdefault("mistakes", []).append(
+            {"q": item["q"], "opts": item["opts"], "ans": item["ans"]}
+        )
+        u["mistakes"] = u["mistakes"][-10:]
+        save_data()
         await send_message(
             client, peer_id, f"❌ Неверно. Правильный ответ: {item['ans']}) {right}"
         )
@@ -1279,6 +1289,45 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
         if await admin_command(client, peer_id, text):
             return
     if user(peer_id).get("banned") and not is_admin(peer_id):
+        return
+
+    m_ref = re.match(r"/ref\s+(\d+)", text, re.I)
+    if m_ref:
+        ref_id = int(m_ref.group(1))
+        u = user(peer_id)
+        if ref_id == peer_id or str(ref_id) not in _data:
+            await send_message(
+                client,
+                peer_id,
+                "Код не найден. Проверь ID друга.",
+                keyboard=MAIN_KEYBOARD,
+            )
+            return
+        if u.get("ref_by"):
+            await send_message(
+                client,
+                peer_id,
+                "Ты уже использовал реферальный код.",
+                keyboard=MAIN_KEYBOARD,
+            )
+            return
+        u["ref_by"] = ref_id
+        u["limit_override"] = int(u.get("limit_override", FREE_LIMIT)) + 3
+        ru = user(ref_id)
+        ru["limit_override"] = int(ru.get("limit_override", FREE_LIMIT)) + 5
+        save_data()
+        await send_message(
+            client,
+            peer_id,
+            "🎁 Бонус за приглашение: +3 задачи! Другу — +5.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        try:
+            await send_message(
+                client, ref_id, "🎉 По твоей ссылке пришёл друг! +5 задач к лимиту."
+            )
+        except Exception:
+            pass
         return
 
     low = text.lower()
@@ -1385,6 +1434,49 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
             keyboard=MAIN_KEYBOARD,
         )
         return
+    if low == BTN_CHECK.lower():
+        mode[peer_id] = "check"
+        await send_message(
+            client,
+            peer_id,
+            "Пришлите своё решение (текстом или фото) — проверю и укажу ошибки.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
+    if low == BTN_MISTAKES.lower():
+        mistakes = user(peer_id).get("mistakes", [])
+        if not mistakes:
+            await send_message(
+                client,
+                peer_id,
+                "Пока нет ошибок из тестов — всё отлично!",
+                keyboard=MAIN_KEYBOARD,
+            )
+            return
+        lines = "\n".join(f"- {m['q']}" for m in mistakes[-5:])
+        await run_llm_task(
+            client,
+            peer_id,
+            "Ученик ошибался в этих вопросах:\n"
+            + lines
+            + "\n\nОбъясни правильные решения и дай 3 похожих задания на отработку.",
+            MAIN_KEYBOARD,
+            ack="⏳ Готовлю работу над ошибками…",
+        )
+        return
+    if low == BTN_REF.lower():
+        link = f"https://vk.me/club{settings.vk_group_id}?ref={peer_id}"
+        await send_message(
+            client,
+            peer_id,
+            "👥 Пригласи друга и получи бонусные задачи!\n\n"
+            f"Твой код: {peer_id}\n"
+            f"Ссылка: {link}\n\n"
+            f"Пусть друг напишет боту: /ref {peer_id}\n"
+            "Тебе +5 задач, другу +3.",
+            keyboard=MAIN_KEYBOARD,
+        )
+        return
 
     # Ожидание ввода для инструментов
     if mode.get(peer_id) in ("explain", "generate", "project", "examples", "spell") and text:
@@ -1415,6 +1507,17 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
                 "Не понял дату. Формат: ДД.ММ ЧЧ:ММ текст (например: 15.11 18:00 контрольная).",
                 keyboard=MAIN_KEYBOARD,
             )
+        return
+    if mode.get(peer_id) == "check" and text:
+        mode.pop(peer_id, None)
+        await run_llm_task(
+            client,
+            peer_id,
+            "Проверь решение ученика: найди ошибки, объясни, где неверно, и покажи "
+            "правильный ход. Если всё верно — подтверди.\n\nРешение ученика:\n" + text,
+            FOLLOWUP_KEYBOARD,
+            ack="⏳ Проверяю решение…",
+        )
         return
 
     if low in ("начать", "start", "помощь", "help", "привет", "/start", BTN_HELP.lower()):
@@ -1558,12 +1661,17 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
 
     photo = photo_url(attachments)
     if photo:
+        is_check = mode.pop(peer_id, None) == "check"
         if peer_id in busy:
             await send_message(client, peer_id, "⏳ Секунду, я ещё решаю предыдущую задачу…")
             return
         busy.add(peer_id)
         try:
-            await send_message(client, peer_id, "⏳ Решаю задачу с фото…")
+            await send_message(
+                client,
+                peer_id,
+                "⏳ Проверяю решение на фото…" if is_check else "⏳ Решаю задачу с фото…",
+            )
             r = await client.get(
                 photo,
                 headers={"User-Agent": "Mozilla/5.0"},
@@ -1574,14 +1682,15 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
                     f"фото не скачалось (HTTP {r.status_code}, {len(r.content)} байт)"
                 )
             b64 = prepare_image(r.content)
+            photo_text = (
+                "Проверь решение на этом фото: найди ошибки, объясни, где неверно, "
+                "и покажи правильный ход. Если всё верно — подтверди."
+                if is_check
+                else "Реши задачу с этого фото. Сначала опиши, что видно на рисунке "
+                "(фигура, подписи, данные, вопрос), затем покажи полное пошаговое решение."
+            )
             content = [
-                {
-                    "type": "text",
-                    "text": (
-                        "Реши задачу с этого фото. Сначала опиши, что видно на рисунке "
-                        "(фигура, подписи, данные, вопрос), затем покажи полное пошаговое решение."
-                    ),
-                },
+                {"type": "text", "text": photo_text},
                 {
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
