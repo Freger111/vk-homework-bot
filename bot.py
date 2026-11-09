@@ -248,7 +248,7 @@ MAIN_KEYBOARD = {
 
 SUBJECTS_KEYBOARD = {
     "one_time": False,
-    "buttons": _grid(SUBJECTS) + [[_btn(BTN_BACK)]],
+    "buttons": [[_btn(BTN_BACK)]] + _grid(SUBJECTS),
 }
 
 TOOLS_KEYBOARD = {
