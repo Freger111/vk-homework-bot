@@ -41,7 +41,6 @@ quiz: dict[int, dict] = {}
 socratic: set[int] = set()
 persona: dict[int, str] = {}
 roast: set[int] = set()
-memes: set[int] = set()
 
 # Ссылка на чат с администратором (для кнопки «Помощь»)
 ADMIN_VK = settings.admin_vk.strip()
@@ -189,32 +188,20 @@ BTN_SOCRATIC = "🧑‍🏫 Наставник"
 
 BTN_PERSONA = "🎭 Личность"
 BTN_ROAST = "🔥 Роаст"
-BTN_MEMES = "😄 Мемы"
 
 PERSONAS = {
     "normal": "",
     "teacher": "Стиль ответа: строгая, но справедливая училка. Требовательно, с нравоучениями.",
     "cat": "Стиль ответа: добрый ленивый кот. Мурлычь, вставляй «мяу», будь милым.",
-    "gopnik": "Стиль ответа: гопник-учитель. Сленг, понты, «братан», «чё», «ну ты понял». Можешь материться.",
+    "gopnik": "Стиль ответа: гопник-учитель. Сленг, понты, «братан», «чё», «ну ты понял».",
     "anime": "Стиль ответа: аниме-тян. Эмоционально, «ня», «кавай», восклицания.",
     "robot": "Стиль ответа: робот-терминатор. Коротко, технично, «ТЕРМИНАЦИЯ ЗАДАЧИ», без эмоций.",
 }
 
 ROAST_STYLE = (
-    "Если ученик ошибся или ответил глупо — жёстко подколи его, можно с матом "
-    "(но без оскорблений личности и травли). Пример тона: «серьёзно? это же изи, ты чё, спишь?»."
+    "Если ученик ошибся или ответил глупо — подколи его с юмором, но без мата, "
+    "оскорблений личности и травли. Пример тона: «серьёзно? это же изи, ты чё, спишь?»."
 )
-
-MEME_PHRASES = [
-    "я не тупой, я креативный",
-    "математика — это когда всё сходится, но не у тебя",
-    "домашка сделана на 5. из 100",
-    "я не списывал, я консультировался",
-    "мозг: включён. руки: не в курсе",
-    "учил, но забыл. как всегда",
-    "2+2=4, но это не точно",
-    "главное — уверенность, а не правильный ответ",
-]
 
 SOCRATIC_PROMPT = (
     "Ты — терпеливый наставник. НЕ давай готовое решение. "
@@ -251,7 +238,7 @@ MAIN_KEYBOARD = {
 MORE_KEYBOARD = {
     "one_time": False,
     "buttons": [
-        [_btn(BTN_PERSONA, "primary"), _btn(BTN_ROAST, "negative"), _btn(BTN_MEMES)],
+        [_btn(BTN_PERSONA, "primary"), _btn(BTN_ROAST, "negative")],
         [_btn(BTN_CHECK, "positive"), _btn(BTN_MISTAKES, "primary")],
         [_btn(BTN_SECTION), _btn(BTN_GRAPH)],
         [_btn(BTN_HISTORY), _btn(BTN_LEVEL)],
@@ -720,27 +707,6 @@ async def plot_task(client: httpx.AsyncClient, peer_id: int, expr: str) -> None:
         )
 
 
-async def send_meme(client: httpx.AsyncClient, peer_id: int) -> None:
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-
-        text = random.choice(MEME_PHRASES)
-        img = Image.new("RGB", (600, 320), (25, 25, 35))
-        draw = ImageDraw.Draw(img)
-        try:
-            font = ImageFont.load_default(size=28)
-        except Exception:
-            font = ImageFont.load_default()
-        draw.multiline_text((30, 110), text, fill=(255, 255, 255), font=font, spacing=10)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        await _upload_and_send(
-            client, peer_id, buf.getvalue(), "😄", filename="meme.png", mime="image/png"
-        )
-    except Exception as e:
-        log.warning("Мем: %s", e)
-
-
 async def run_llm_task(
     client: httpx.AsyncClient,
     peer_id: int,
@@ -761,8 +727,6 @@ async def run_llm_task(
         bump_usage(peer_id)
         add_task(peer_id, prompt, reply)
         await send_long(client, peer_id, reply, keyboard=keyboard)
-        if peer_id in memes:
-            await send_meme(client, peer_id)
     finally:
         busy.discard(peer_id)
 
@@ -1616,21 +1580,6 @@ async def handle_update(client: httpx.AsyncClient, update: dict) -> None:
                 client,
                 peer_id,
                 "🔥 Роаст включён: буду подкалывать за ошибки.",
-                keyboard=MAIN_KEYBOARD,
-            )
-        return
-    if low == BTN_MEMES.lower():
-        if peer_id in memes:
-            memes.discard(peer_id)
-            await send_message(
-                client, peer_id, "😄 Мемы выключены.", keyboard=MAIN_KEYBOARD
-            )
-        else:
-            memes.add(peer_id)
-            await send_message(
-                client,
-                peer_id,
-                "😄 Мемы включены: после ответа буду кидать мем.",
                 keyboard=MAIN_KEYBOARD,
             )
         return
